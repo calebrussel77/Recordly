@@ -13,6 +13,8 @@ Language: EN | [简中](README.zh-CN.md)
 [Recordly](https://www.recordly.dev) is an **open-source screen recorder** and editor for **walkthroughs, demos, product videos**, and more. 
 **Accepting PRs.** [Donate](https://ko-fi.com/webadderall/goal?g=0)
 
+This fork is maintained at **[calebrussel77/Recordly](https://github.com/calebrussel77/Recordly)** and publishes Windows/Linux builds from this repository's own GitHub Actions release pipeline. The original upstream project remains **[webadderallorg/Recordly](https://github.com/webadderallorg/Recordly)**.
+
 https://github.com/user-attachments/assets/9b66c71d-ac97-49ff-a0c9-63ac26edf2e4
 
 ---
@@ -173,7 +175,7 @@ Browse and install community extensions from the [Recordly Marketplace](https://
 
 Prebuilt releases are available at:
 
-https://github.com/webadderallorg/Recordly/releases
+https://github.com/calebrussel77/Recordly/releases
 
 ---
 
@@ -206,7 +208,7 @@ sudo apt install build-essential cmake libx11-dev libxtst-dev libxrandr-dev libx
 ### Steps
 
 ```bash
-git clone https://github.com/webadderallorg/Recordly.git recordly
+git clone https://github.com/calebrussel77/Recordly.git recordly
 cd recordly
 npm install
 npm run dev
@@ -223,6 +225,28 @@ Target-specific build commands are also available:
 - `npm run build:mac`
 - `npm run build:win`
 - `npm run build:linux`
+
+## Release pipeline for this fork
+
+This fork publishes releases with `.github/workflows/release.yml`.
+
+- Windows x64 builds produce an NSIS installer (`Recordly-windows-x64.exe`) plus update metadata.
+- Linux x64 builds produce an AppImage (`Recordly-linux-x64.AppImage`) plus update metadata.
+- macOS builds are intentionally skipped in this fork pipeline unless signing/notarization is configured later.
+
+To publish a release:
+
+```bash
+git tag v$(node -p "require('./package.json').version")
+git push origin main --tags
+gh release create v$(node -p "require('./package.json').version") \
+  --repo calebrussel77/Recordly \
+  --title "v$(node -p "require('./package.json').version")" \
+  --generate-notes \
+  --latest
+```
+
+Publishing the GitHub release triggers the workflow, builds Windows/Linux artifacts, uploads them to the release, and marks the release as latest.
 
 ---
 
@@ -363,7 +387,7 @@ See `CONTRIBUTING.md` for guidelines.
 
 Bug reports and feature requests:
 
-https://github.com/webadderallorg/Recordly/issues
+https://github.com/calebrussel77/Recordly/issues
 
 Pull requests are welcome.
 
