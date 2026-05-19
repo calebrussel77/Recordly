@@ -41,6 +41,7 @@ import {
 	type SpeedRegion,
 	type TrimRegion,
 	type WebcamOverlaySettings,
+	type WebcamSmartBackgroundQuality,
 	ZOOM_DEPTH_SCALES,
 	type ZoomDepth,
 	type ZoomFocus,
@@ -135,14 +136,18 @@ import {
 	DEFAULT_CURSOR_CLICK_BOUNCE_DURATION,
 	DEFAULT_CURSOR_MOTION_BLUR,
 	DEFAULT_CURSOR_SIZE,
-	DEFAULT_CURSOR_STYLE,
 	DEFAULT_CURSOR_SMOOTHING,
+	DEFAULT_CURSOR_STYLE,
 	DEFAULT_CURSOR_SWAY,
 	DEFAULT_PADDING,
 	DEFAULT_WEBCAM_CORNER_RADIUS,
 	DEFAULT_WEBCAM_REACT_TO_ZOOM,
 	DEFAULT_WEBCAM_SHADOW,
 	DEFAULT_WEBCAM_SIZE,
+	DEFAULT_WEBCAM_SMART_BACKGROUND_COLOR,
+	DEFAULT_WEBCAM_SMART_BACKGROUND_ENABLED,
+	DEFAULT_WEBCAM_SMART_BACKGROUND_PRESET_ID,
+	DEFAULT_WEBCAM_SMART_BACKGROUND_QUALITY,
 	DEFAULT_ZOOM_IN_DURATION_MS,
 	DEFAULT_ZOOM_IN_EASING,
 	DEFAULT_ZOOM_IN_OVERLAP_MS,
@@ -177,6 +182,10 @@ import {
 	getWebcamOverlayPosition,
 	getWebcamOverlaySizePx,
 } from "./webcamOverlay";
+import {
+	createSmartWebcamBackgroundRenderer,
+	type SmartWebcamBackgroundRenderer,
+} from "./webcamSmartBackground";
 
 type PlaybackAnimationState = {
 	scale: number;
@@ -206,10 +215,17 @@ type PixiRendererAttempt = {
 	message: string;
 };
 const PIXI_RENDERER_INIT_TIMEOUT_MS = 8_000;
+const SMART_BACKGROUND_PREVIEW_INTERVAL_MS: Record<WebcamSmartBackgroundQuality, number> = {
+	fast: 1000 / 30,
+	balanced: 1000 / 24,
+};
 
 function isCanvasRenderer(application: Application): boolean {
 	const rendererName = application?.renderer?.constructor?.name?.toLowerCase();
-	return Boolean(rendererName && (rendererName.includes("canvasrenderer") || rendererName.includes("canvas")));
+	return Boolean(
+		rendererName &&
+			(rendererName.includes("canvasrenderer") || rendererName.includes("canvas")),
+	);
 }
 
 function toRendererErrorMessage(error: unknown): string {
@@ -218,7 +234,10 @@ function toRendererErrorMessage(error: unknown): string {
 
 function isRendererUnavailableError(error: unknown): boolean {
 	const message = toRendererErrorMessage(error).toLowerCase();
-	return message.includes("canvasrenderer is not yet implemented") || message.includes("no available renderer");
+	return (
+		message.includes("canvasrenderer is not yet implemented") ||
+		message.includes("no available renderer")
+	);
 }
 
 function summarizeRendererAttempts(attempts: readonly PixiRendererAttempt[]): string {
@@ -494,6 +513,10 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 		const webcamVideoRef = useRef<HTMLVideoElement | null>(null);
 		const webcamBubbleRef = useRef<HTMLDivElement | null>(null);
 		const webcamBubbleInnerRef = useRef<HTMLDivElement | null>(null);
+		const webcamSmartBackgroundCanvasRef = useRef<HTMLCanvasElement | null>(null);
+		const webcamSmartBackgroundRendererRef = useRef<SmartWebcamBackgroundRenderer | null>(null);
+		const webcamSmartBackgroundHasFrameRef = useRef(false);
+		const [webcamSmartBackgroundHasFrame, setWebcamSmartBackgroundHasFrame] = useState(false);
 		const [webcamVideoDimensions, setWebcamVideoDimensions] = useState<{
 			width: number;
 			height: number;
@@ -583,7 +606,9 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 		);
 
 		const initializePixiRenderer = useCallback(
-			async (container: HTMLDivElement): Promise<{
+			async (
+				container: HTMLDivElement,
+			): Promise<{
 				app: Application;
 				backend: PixiPreviewBackend;
 			}> => {
@@ -603,7 +628,8 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 					}
 
 					const rendererApp = new Application();
-					const initStarted = typeof performance === "undefined" ? Date.now() : performance.now();
+					const initStarted =
+						typeof performance === "undefined" ? Date.now() : performance.now();
 					try {
 						await initApplicationWithTimeout(
 							rendererApp,
@@ -622,7 +648,8 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 							backend,
 						);
 						const elapsed = Math.round(
-							(typeof performance === "undefined" ? Date.now() : performance.now()) - initStarted,
+							(typeof performance === "undefined" ? Date.now() : performance.now()) -
+								initStarted,
 						);
 						if (isCanvasRenderer(rendererApp)) {
 							throw new Error(
@@ -632,9 +659,13 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 						return { app: rendererApp, backend };
 					} catch (error) {
 						const elapsed = Math.round(
-							(typeof performance === "undefined" ? Date.now() : performance.now()) - initStarted,
+							(typeof performance === "undefined" ? Date.now() : performance.now()) -
+								initStarted,
 						);
-						attempts.push({ backend, message: `${toRendererErrorMessage(error)} (after ${elapsed}ms)` });
+						attempts.push({
+							backend,
+							message: `${toRendererErrorMessage(error)} (after ${elapsed}ms)`,
+						});
 						const statusMessage = isRendererUnavailableError(error)
 							? "renderer backend unavailable in this runtime"
 							: "renderer init failed";
@@ -738,6 +769,14 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 		const webcamTimeOffsetMs = webcam?.timeOffsetMs;
 		const webcamCropRegion = webcam?.cropRegion;
 		const webcamMirror = webcam?.mirror ?? false;
+		const webcamSmartBackgroundEnabled =
+			webcam?.smartBackgroundEnabled ?? DEFAULT_WEBCAM_SMART_BACKGROUND_ENABLED;
+		const webcamSmartBackgroundColor =
+			webcam?.smartBackgroundColor ?? DEFAULT_WEBCAM_SMART_BACKGROUND_COLOR;
+		const webcamSmartBackgroundPresetId =
+			webcam?.smartBackgroundPresetId ?? DEFAULT_WEBCAM_SMART_BACKGROUND_PRESET_ID;
+		const webcamSmartBackgroundQuality =
+			webcam?.smartBackgroundQuality ?? DEFAULT_WEBCAM_SMART_BACKGROUND_QUALITY;
 		const webcamCropPreviewContentStyle = useMemo<React.CSSProperties>(() => {
 			if (!webcamVideoDimensions) {
 				return { opacity: 0 };
@@ -1061,7 +1100,9 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 			const activeFrameData = frame
 				? extensionHost.getFrames().find((registeredFrame) => registeredFrame.id === frame)
 				: null;
-			const shouldRedrawDynamicFrame = Boolean(activeFrameData?.draw && frameSpriteRef.current);
+			const shouldRedrawDynamicFrame = Boolean(
+				activeFrameData?.draw && frameSpriteRef.current,
+			);
 
 			// Layout-only changes should not force texture/sprite recreation.
 			if (frameReloadKeyRef.current === nextFrameReloadKey && !shouldRedrawDynamicFrame) {
@@ -1765,6 +1806,129 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 		);
 
 		useEffect(() => {
+			const video = webcamVideoRef.current;
+			const canvas = webcamSmartBackgroundCanvasRef.current;
+			if (
+				!webcamSmartBackgroundEnabled ||
+				!webcamEnabled ||
+				!webcamVideoPath ||
+				!video ||
+				!canvas
+			) {
+				webcamSmartBackgroundHasFrameRef.current = false;
+				setWebcamSmartBackgroundHasFrame(false);
+				return;
+			}
+
+			const renderer =
+				webcamSmartBackgroundRendererRef.current ?? createSmartWebcamBackgroundRenderer();
+			webcamSmartBackgroundRendererRef.current = renderer;
+			if (!renderer) {
+				webcamSmartBackgroundHasFrameRef.current = false;
+				setWebcamSmartBackgroundHasFrame(false);
+				return;
+			}
+
+			let animationFrame = 0;
+			let cancelled = false;
+			let lastSmartRenderTimeMs = -Infinity;
+			const smartBackgroundFrameIntervalMs =
+				SMART_BACKGROUND_PREVIEW_INTERVAL_MS[webcamSmartBackgroundQuality];
+			webcamSmartBackgroundHasFrameRef.current = false;
+			setWebcamSmartBackgroundHasFrame(false);
+			const draw = () => {
+				if (cancelled) {
+					return;
+				}
+
+				let renderedSmartFrame = false;
+				const nowMs = typeof performance === "undefined" ? Date.now() : performance.now();
+				if (
+					webcamSmartBackgroundHasFrameRef.current &&
+					nowMs - lastSmartRenderTimeMs < smartBackgroundFrameIntervalMs
+				) {
+					animationFrame = window.requestAnimationFrame(draw);
+					return;
+				}
+				if (video.videoWidth > 0 && video.videoHeight > 0) {
+					const bounds = canvas.getBoundingClientRect();
+					const cssSize = Math.max(bounds.width, bounds.height, 1);
+					const pixelSize = Math.max(
+						1,
+						Math.min(
+							720,
+							Math.round(cssSize * Math.min(window.devicePixelRatio || 1, 2)),
+						),
+					);
+					if (canvas.width !== pixelSize) {
+						canvas.width = pixelSize;
+					}
+					if (canvas.height !== pixelSize) {
+						canvas.height = pixelSize;
+					}
+
+					lastSmartRenderTimeMs = nowMs;
+					renderedSmartFrame = renderer.render({
+						source: video,
+						sourceWidth: video.videoWidth,
+						sourceHeight: video.videoHeight,
+						outputCanvas: canvas,
+						cropRegion: webcamCropRegion,
+						mirror: webcamMirror,
+						backgroundColor: webcamSmartBackgroundColor,
+						backgroundPresetId: webcamSmartBackgroundPresetId,
+						quality: webcamSmartBackgroundQuality,
+						timestampMs:
+							Number.isFinite(video.currentTime) && video.currentTime > 0
+								? video.currentTime * 1000
+								: undefined,
+					});
+				}
+
+				if (webcamSmartBackgroundHasFrameRef.current !== renderedSmartFrame) {
+					webcamSmartBackgroundHasFrameRef.current = renderedSmartFrame;
+					setWebcamSmartBackgroundHasFrame(renderedSmartFrame);
+				}
+
+				animationFrame = window.requestAnimationFrame(draw);
+			};
+
+			void renderer
+				.prepare(webcamSmartBackgroundQuality, webcamSmartBackgroundPresetId)
+				.then((isReady) => {
+					if (cancelled) {
+						return;
+					}
+					if (isReady) {
+						draw();
+					}
+				});
+
+			return () => {
+				cancelled = true;
+				window.cancelAnimationFrame(animationFrame);
+				webcamSmartBackgroundHasFrameRef.current = false;
+				setWebcamSmartBackgroundHasFrame(false);
+			};
+		}, [
+			webcamCropRegion,
+			webcamEnabled,
+			webcamMirror,
+			webcamSmartBackgroundColor,
+			webcamSmartBackgroundEnabled,
+			webcamSmartBackgroundPresetId,
+			webcamSmartBackgroundQuality,
+			webcamVideoPath,
+		]);
+
+		useEffect(() => {
+			return () => {
+				webcamSmartBackgroundRendererRef.current?.close();
+				webcamSmartBackgroundRendererRef.current = null;
+			};
+		}, []);
+
+		useEffect(() => {
 			syncWebcamMedia();
 		}, [syncWebcamMedia]);
 
@@ -2236,10 +2400,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 					resetSpringState(springYRef.current, appliedY);
 				}
 
-				applyTransform(
-					{ scale: appliedScale, x: appliedX, y: appliedY },
-					targetFocus,
-				);
+				applyTransform({ scale: appliedScale, x: appliedX, y: appliedY }, targetFocus);
 
 				applyWebcamBubbleLayout(animationStateRef.current.appliedScale || 1);
 
@@ -2742,7 +2903,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 						filter:
 							showShadow && shadowIntensity > 0
 								? `drop-shadow(0 ${shadowIntensity * 12}px ${shadowIntensity * 48}px rgba(0,0,0,${shadowIntensity * 0.7})) drop-shadow(0 ${shadowIntensity * 4}px ${shadowIntensity * 16}px rgba(0,0,0,${shadowIntensity * 0.5})) drop-shadow(0 ${shadowIntensity * 2}px ${shadowIntensity * 8}px rgba(0,0,0,${shadowIntensity * 0.3}))`
-							: "none",
+								: "none",
 					}}
 				/>
 				{hasRendererFallback && (
@@ -2750,7 +2911,8 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 						<div className="rounded-md bg-black/70 px-3 py-1.5 text-xs text-white">
 							{`Pixi renderer unavailable on this environment (${pixiRendererBackend ?? "unknown"}).`}
 							<br />
-							Fallback to 2D native preview so you can continue working while the GPU path is unavailable.
+							Fallback to 2D native preview so you can continue working while the GPU
+							path is unavailable.
 						</div>
 					</div>
 				)}
@@ -2789,10 +2951,24 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 									ref={webcamBubbleInnerRef}
 									className="relative h-full w-full overflow-hidden"
 								>
+									{webcamSmartBackgroundEnabled ? (
+										<canvas
+											ref={webcamSmartBackgroundCanvasRef}
+											className="pointer-events-none absolute inset-0 z-[1] block h-full w-full"
+											aria-hidden="true"
+										/>
+									) : null}
 									<div
 										className="pointer-events-none absolute inset-0 overflow-hidden"
 										style={{
-											opacity: webcamVideoDimensions ? 1 : 0,
+											opacity:
+												webcamVideoDimensions &&
+												!(
+													webcamSmartBackgroundEnabled &&
+													webcamSmartBackgroundHasFrame
+												)
+													? 1
+													: 0,
 											transform: webcamMirror ? "scaleX(-1)" : undefined,
 										}}
 									>
@@ -2804,6 +2980,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 												ref={webcamVideoRef}
 												src={webcamVideoPath}
 												className="pointer-events-none absolute inset-0 block h-full w-full object-fill"
+												crossOrigin="anonymous"
 												muted
 												playsInline
 												preload="auto"

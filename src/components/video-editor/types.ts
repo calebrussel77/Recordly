@@ -78,6 +78,8 @@ export type WebcamPositionPreset =
 	| "center-right"
 	| "bottom-center"
 	| "custom";
+export type WebcamSmartBackgroundQuality = "fast" | "balanced";
+export type WebcamSmartBackgroundPresetId = string;
 
 export interface WebcamOverlaySettings {
 	enabled: boolean;
@@ -94,6 +96,10 @@ export interface WebcamOverlaySettings {
 	cornerRadius: number;
 	shadow: number;
 	margin: number;
+	smartBackgroundEnabled: boolean;
+	smartBackgroundColor: string;
+	smartBackgroundQuality: WebcamSmartBackgroundQuality;
+	smartBackgroundPresetId: WebcamSmartBackgroundPresetId;
 }
 
 export const DEFAULT_CURSOR_SIZE = 3.0;
@@ -140,6 +146,10 @@ export const DEFAULT_WEBCAM_POSITION_PRESET: WebcamPositionPreset = "bottom-righ
 export const DEFAULT_WEBCAM_POSITION_X = 1;
 export const DEFAULT_WEBCAM_POSITION_Y = 1;
 export const DEFAULT_WEBCAM_TIME_OFFSET_MS = 0;
+export const DEFAULT_WEBCAM_SMART_BACKGROUND_ENABLED = false;
+export const DEFAULT_WEBCAM_SMART_BACKGROUND_COLOR = "#2563EB";
+export const DEFAULT_WEBCAM_SMART_BACKGROUND_QUALITY: WebcamSmartBackgroundQuality = "balanced";
+export const DEFAULT_WEBCAM_SMART_BACKGROUND_PRESET_ID = "gradient-aurora";
 
 export const DEFAULT_WEBCAM_OVERLAY: WebcamOverlaySettings = {
 	enabled: false,
@@ -156,6 +166,10 @@ export const DEFAULT_WEBCAM_OVERLAY: WebcamOverlaySettings = {
 	cornerRadius: DEFAULT_WEBCAM_CORNER_RADIUS,
 	shadow: DEFAULT_WEBCAM_SHADOW,
 	margin: DEFAULT_WEBCAM_MARGIN,
+	smartBackgroundEnabled: DEFAULT_WEBCAM_SMART_BACKGROUND_ENABLED,
+	smartBackgroundColor: DEFAULT_WEBCAM_SMART_BACKGROUND_COLOR,
+	smartBackgroundQuality: DEFAULT_WEBCAM_SMART_BACKGROUND_QUALITY,
+	smartBackgroundPresetId: DEFAULT_WEBCAM_SMART_BACKGROUND_PRESET_ID,
 };
 
 export interface TrimRegion {
@@ -466,7 +480,10 @@ export const DEFAULT_PADDING: Padding = {
 	right: 20,
 	linked: true,
 };
-export type { SourceAudioTrackSetting, SourceAudioTrackSettings } from "@/components/video-editor/audio/audioTypes";
+export type {
+	SourceAudioTrackSetting,
+	SourceAudioTrackSettings,
+} from "@/components/video-editor/audio/audioTypes";
 
 export interface AudioRegion {
 	id: string;

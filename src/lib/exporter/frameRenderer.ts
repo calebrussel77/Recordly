@@ -54,6 +54,10 @@ import {
 	getWebcamOverlayPosition,
 	getWebcamOverlaySizePx,
 } from "@/components/video-editor/webcamOverlay";
+import {
+	createSmartWebcamBackgroundRenderer,
+	type SmartWebcamBackgroundRenderer,
+} from "@/components/video-editor/webcamSmartBackground";
 import { getAssetPath, getExportableVideoUrl, getRenderableAssetUrl } from "@/lib/assetPath";
 import { extensionHost } from "@/lib/extensions";
 import {
@@ -297,6 +301,7 @@ export class FrameRenderer {
 	private webcamFrameCacheCtx: CanvasRenderingContext2D | null = null;
 	private webcamBubbleCanvas: HTMLCanvasElement | null = null;
 	private webcamBubbleCtx: CanvasRenderingContext2D | null = null;
+	private webcamSmartBackgroundRenderer: SmartWebcamBackgroundRenderer | null = null;
 	private lastSyncedWebcamTime: number | null = null;
 	private cleanupWebcamSource: (() => void) | null = null;
 	private frameImage: HTMLImageElement | null = null;
@@ -453,6 +458,7 @@ export class FrameRenderer {
 		// Setup background (render separately, not in PixiJS)
 		await this.setupBackground();
 		await this.setupWebcamSource();
+		await this.prepareSmartWebcamBackground();
 		await this.setupFrame();
 
 		if ((this.config.zoomMotionBlur ?? 0) > 0) {
@@ -518,6 +524,22 @@ export class FrameRenderer {
 		this.videoContainer.mask = this.maskGraphics;
 		if (this.cursorOverlay) {
 			this.cursorContainer.addChild(this.cursorOverlay.container);
+		}
+	}
+
+	private async prepareSmartWebcamBackground(): Promise<void> {
+		if (!this.config.webcam?.enabled || !this.config.webcam.smartBackgroundEnabled) {
+			return;
+		}
+
+		this.webcamSmartBackgroundRenderer = createSmartWebcamBackgroundRenderer();
+		const prepared = await this.webcamSmartBackgroundRenderer?.prepare(
+			this.config.webcam.smartBackgroundQuality,
+			this.config.webcam.smartBackgroundPresetId,
+		);
+		if (!prepared) {
+			this.webcamSmartBackgroundRenderer?.close();
+			this.webcamSmartBackgroundRenderer = null;
 		}
 	}
 
@@ -2502,39 +2524,68 @@ export class FrameRenderer {
 		const drawX = (size - drawWidth) / 2;
 		const drawY = (size - drawHeight) / 2;
 
-		bubbleCtx.save();
-		drawSquircleOnCanvas(bubbleCtx, { x: 0, y: 0, width: size, height: size, radius });
-		bubbleCtx.clip();
-		if (webcam.mirror) {
-			bubbleCtx.save();
-			bubbleCtx.translate(size, 0);
-			bubbleCtx.scale(-1, 1);
-			bubbleCtx.drawImage(
-				webcamFrameSource,
-				sx,
-				sy,
-				sw,
-				sh,
-				drawX,
-				drawY,
-				drawWidth,
-				drawHeight,
-			);
-			bubbleCtx.restore();
-		} else {
-			bubbleCtx.drawImage(
-				webcamFrameSource,
-				sx,
-				sy,
-				sw,
-				sh,
-				drawX,
-				drawY,
-				drawWidth,
-				drawHeight,
-			);
+		if (webcam.smartBackgroundEnabled && !this.webcamSmartBackgroundRenderer) {
+			this.webcamSmartBackgroundRenderer = createSmartWebcamBackgroundRenderer();
 		}
-		bubbleCtx.restore();
+		const renderedSmartBackground =
+			webcam.smartBackgroundEnabled &&
+			this.webcamSmartBackgroundRenderer?.render({
+				source: webcamFrameSource,
+				sourceWidth,
+				sourceHeight,
+				outputCanvas: bubbleCanvas,
+				cropRegion: webcam.cropRegion,
+				mirror: webcam.mirror,
+				backgroundColor: webcam.smartBackgroundColor,
+				backgroundPresetId: webcam.smartBackgroundPresetId,
+				quality: webcam.smartBackgroundQuality,
+				timestampMs: this.currentVideoTime * 1000,
+			});
+
+		if (!renderedSmartBackground) {
+			bubbleCtx.save();
+			drawSquircleOnCanvas(bubbleCtx, { x: 0, y: 0, width: size, height: size, radius });
+			bubbleCtx.clip();
+			if (webcam.mirror) {
+				bubbleCtx.save();
+				bubbleCtx.translate(size, 0);
+				bubbleCtx.scale(-1, 1);
+				bubbleCtx.drawImage(
+					webcamFrameSource,
+					sx,
+					sy,
+					sw,
+					sh,
+					drawX,
+					drawY,
+					drawWidth,
+					drawHeight,
+				);
+				bubbleCtx.restore();
+			} else {
+				bubbleCtx.drawImage(
+					webcamFrameSource,
+					sx,
+					sy,
+					sw,
+					sh,
+					drawX,
+					drawY,
+					drawWidth,
+					drawHeight,
+				);
+			}
+			bubbleCtx.restore();
+		}
+
+		if (renderedSmartBackground) {
+			bubbleCtx.save();
+			bubbleCtx.globalCompositeOperation = "destination-in";
+			drawSquircleOnCanvas(bubbleCtx, { x: 0, y: 0, width: size, height: size, radius });
+			bubbleCtx.fillStyle = "#fff";
+			bubbleCtx.fill();
+			bubbleCtx.restore();
+		}
 
 		if ((webcam.shadow ?? 0) > 0) {
 			const shadow = Math.max(0, Math.min(1, webcam.shadow));
@@ -2630,6 +2681,8 @@ export class FrameRenderer {
 		this.webcamFrameCacheCtx = null;
 		this.webcamBubbleCanvas = null;
 		this.webcamBubbleCtx = null;
+		this.webcamSmartBackgroundRenderer?.close();
+		this.webcamSmartBackgroundRenderer = null;
 		this.lastSyncedWebcamTime = null;
 		this.frameImage = null;
 		this.frameInsets = null;

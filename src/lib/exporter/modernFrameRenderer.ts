@@ -61,6 +61,10 @@ import {
 	getWebcamOverlaySizePx,
 	isWebcamCropRegionDefault,
 } from "@/components/video-editor/webcamOverlay";
+import {
+	createSmartWebcamBackgroundRenderer,
+	type SmartWebcamBackgroundRenderer,
+} from "@/components/video-editor/webcamSmartBackground";
 import { getAssetPath, getExportableVideoUrl, getRenderableAssetUrl } from "@/lib/assetPath";
 import { extensionHost } from "@/lib/extensions";
 import {
@@ -95,6 +99,7 @@ import {
 import { buildTemporalSamplePlanUs, getTemporalMotionBlurConfig } from "./temporalMotionBlur";
 
 const TEMPORAL_ZOOM_MOTION_BLUR_ENABLED = false;
+const WEBCAM_FRAME_CACHE_REFRESH_INTERVAL_SECONDS = 0.25;
 
 import type { ExportRenderBackend } from "./types";
 
@@ -435,6 +440,8 @@ export class FrameRenderer {
 	private webcamSeekPromise: Promise<void> | null = null;
 	private webcamFrameCacheCanvas: HTMLCanvasElement | null = null;
 	private webcamFrameCacheCtx: CanvasRenderingContext2D | null = null;
+	private lastWebcamCacheRefreshTime = -Infinity;
+	private webcamSmartBackgroundRenderer: SmartWebcamBackgroundRenderer | null = null;
 	private sceneVideoFrameStagingCanvas: HTMLCanvasElement | null = null;
 	private sceneVideoFrameStagingCtx: CanvasRenderingContext2D | null = null;
 	private backgroundVideoFrameStagingCanvas: HTMLCanvasElement | null = null;
@@ -628,6 +635,7 @@ export class FrameRenderer {
 		await this.setupBackground();
 		await this.setupFrame();
 		await this.setupWebcamSource();
+		await this.prepareSmartWebcamBackground();
 
 		this.annotationScaleFactor = this.calculateAnnotationScaleFactor();
 		this.annotationAssets = await preloadAnnotationAssets(this.config.annotationRegions ?? []);
@@ -657,6 +665,22 @@ export class FrameRenderer {
 		this.updateVideoEffectsFilterState();
 
 		console.log(`[FrameRenderer] Export renderer backend: ${this.rendererBackend}`);
+	}
+
+	private async prepareSmartWebcamBackground(): Promise<void> {
+		if (!this.config.webcam?.enabled || !this.config.webcam.smartBackgroundEnabled) {
+			return;
+		}
+
+		this.webcamSmartBackgroundRenderer = createSmartWebcamBackgroundRenderer();
+		const prepared = await this.webcamSmartBackgroundRenderer?.prepare(
+			this.config.webcam.smartBackgroundQuality,
+			this.config.webcam.smartBackgroundPresetId,
+		);
+		if (!prepared) {
+			this.webcamSmartBackgroundRenderer?.close();
+			this.webcamSmartBackgroundRenderer = null;
+		}
 	}
 
 	private async createPixiApplication(
@@ -2365,6 +2389,7 @@ export class FrameRenderer {
 			this.clearWebcamMediaElement();
 			this.webcamFrameCacheCanvas = null;
 			this.webcamFrameCacheCtx = null;
+			this.lastWebcamCacheRefreshTime = -Infinity;
 			this.lastSyncedWebcamTime = null;
 			this.webcamLayoutCache = null;
 			this.webcamRenderMode = "hidden";
@@ -2378,6 +2403,7 @@ export class FrameRenderer {
 		this.clearWebcamMediaElement();
 		this.webcamFrameCacheCanvas = null;
 		this.webcamFrameCacheCtx = null;
+		this.lastWebcamCacheRefreshTime = -Infinity;
 		this.webcamLayoutCache = null;
 		this.webcamRenderMode = "hidden";
 
@@ -2471,10 +2497,34 @@ export class FrameRenderer {
 		return !!this.webcamFrameCacheCtx;
 	}
 
+	private shouldRefreshWebcamFrameCache(sourceWidth: number, sourceHeight: number): boolean {
+		if (this.config.webcam?.smartBackgroundEnabled) {
+			return true;
+		}
+		if (!isWebcamCropRegionDefault(this.config.webcam?.cropRegion)) {
+			return true;
+		}
+		if (
+			!this.webcamFrameCacheCanvas ||
+			this.webcamFrameCacheCanvas.width !== Math.max(1, Math.ceil(sourceWidth)) ||
+			this.webcamFrameCacheCanvas.height !== Math.max(1, Math.ceil(sourceHeight))
+		) {
+			return true;
+		}
+
+		const elapsedSeconds = this.currentVideoTime - this.lastWebcamCacheRefreshTime;
+		return (
+			!Number.isFinite(elapsedSeconds) ||
+			elapsedSeconds < 0 ||
+			elapsedSeconds >= WEBCAM_FRAME_CACHE_REFRESH_INTERVAL_SECONDS
+		);
+	}
+
 	private refreshWebcamFrameCache(
 		source: CanvasImageSource | VideoFrame,
 		width: number,
 		height: number,
+		timestampMs: number,
 	): boolean {
 		const sourceRect = getWebcamCropSourceRect(this.config.webcam?.cropRegion, width, height);
 		if (!this.ensureWebcamFrameCache(sourceRect.sw, sourceRect.sh)) {
@@ -2491,6 +2541,27 @@ export class FrameRenderer {
 			this.webcamFrameCacheCanvas.width,
 			this.webcamFrameCacheCanvas.height,
 		);
+		if (this.config.webcam?.smartBackgroundEnabled) {
+			if (!this.webcamSmartBackgroundRenderer) {
+				this.webcamSmartBackgroundRenderer = createSmartWebcamBackgroundRenderer();
+			}
+			if (
+				this.webcamSmartBackgroundRenderer?.render({
+					source,
+					sourceWidth: width,
+					sourceHeight: height,
+					outputCanvas: this.webcamFrameCacheCanvas,
+					cropRegion: this.config.webcam.cropRegion,
+					backgroundColor: this.config.webcam.smartBackgroundColor,
+					backgroundPresetId: this.config.webcam.smartBackgroundPresetId,
+					quality: this.config.webcam.smartBackgroundQuality,
+					timestampMs,
+				})
+			) {
+				return true;
+			}
+		}
+
 		this.webcamFrameCacheCtx.drawImage(
 			source,
 			sourceRect.sx,
@@ -2531,16 +2602,22 @@ export class FrameRenderer {
 		if (canUseLiveSource && liveSource && liveSourceWidth > 0 && liveSourceHeight > 0) {
 			const usesDefaultCropRegion = isWebcamCropRegionDefault(this.config.webcam?.cropRegion);
 			const needsCacheBackedSource =
+				this.config.webcam?.smartBackgroundEnabled ||
 				!usesDefaultCropRegion ||
-				(typeof HTMLVideoElement !== "undefined" &&
-					liveSource instanceof HTMLVideoElement);
+				(typeof HTMLVideoElement !== "undefined" && liveSource instanceof HTMLVideoElement);
 
 			if (needsCacheBackedSource) {
-				this.refreshWebcamFrameCache(
-					liveSource,
-					liveSourceWidth,
-					liveSourceHeight,
-				);
+				if (this.shouldRefreshWebcamFrameCache(liveSourceWidth, liveSourceHeight)) {
+					const refreshed = this.refreshWebcamFrameCache(
+						liveSource,
+						liveSourceWidth,
+						liveSourceHeight,
+						this.currentVideoTime * 1000,
+					);
+					if (refreshed) {
+						this.lastWebcamCacheRefreshTime = this.currentVideoTime;
+					}
+				}
 				const cachedSource = this.getCachedWebcamRenderSource();
 				if (cachedSource) {
 					this.setWebcamRenderMode("live");
@@ -3979,6 +4056,9 @@ export class FrameRenderer {
 		this.cleanupWebcamSource = null;
 		this.webcamFrameCacheCanvas = null;
 		this.webcamFrameCacheCtx = null;
+		this.lastWebcamCacheRefreshTime = -Infinity;
+		this.webcamSmartBackgroundRenderer?.close();
+		this.webcamSmartBackgroundRenderer = null;
 		this.sceneVideoFrameStagingCanvas = null;
 		this.sceneVideoFrameStagingCtx = null;
 		this.webcamVideoFrameStagingCanvas = null;

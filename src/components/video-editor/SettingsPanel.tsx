@@ -9,6 +9,7 @@ import {
 import { AnimatePresence, LayoutGroup, motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import minimalCursorUrl from "@/assets/cursors/custom/minimal-cursor.svg";
 import { Button } from "@/components/ui/button";
 import {
 	Select,
@@ -40,7 +41,6 @@ import {
 	isVideoWallpaperSource,
 } from "@/lib/wallpapers";
 import { type AspectRatio } from "@/utils/aspectRatioUtils";
-import minimalCursorUrl from "@/assets/cursors/custom/minimal-cursor.svg";
 import { useI18n, useScopedT } from "../../contexts/I18nContext";
 import type { AppLocale } from "../../i18n/config";
 import { SUPPORTED_LOCALES } from "../../i18n/config";
@@ -66,6 +66,7 @@ import type {
 	Padding,
 	WebcamOverlaySettings,
 	WebcamPositionPreset,
+	WebcamSmartBackgroundQuality,
 	ZoomDepth,
 	ZoomMode,
 	ZoomMotionBlurTuning,
@@ -89,6 +90,9 @@ import {
 	DEFAULT_WEBCAM_REACT_TO_ZOOM,
 	DEFAULT_WEBCAM_SHADOW,
 	DEFAULT_WEBCAM_SIZE,
+	DEFAULT_WEBCAM_SMART_BACKGROUND_ENABLED,
+	DEFAULT_WEBCAM_SMART_BACKGROUND_PRESET_ID,
+	DEFAULT_WEBCAM_SMART_BACKGROUND_QUALITY,
 	DEFAULT_ZOOM_IN_DURATION_MS,
 	DEFAULT_ZOOM_MOTION_BLUR_TUNING,
 	DEFAULT_ZOOM_OUT_DURATION_MS,
@@ -105,10 +109,36 @@ import {
 	normalizeWebcamCropRegion,
 	resolveWebcamCorner,
 } from "./webcamOverlay";
+import {
+	getWebcamSmartBackgroundPreset,
+	WEBCAM_SMART_BACKGROUND_CATEGORIES,
+	WEBCAM_SMART_BACKGROUND_PRESETS,
+	type WebcamSmartBackgroundCategoryId,
+	type WebcamSmartBackgroundPreset,
+} from "./webcamSmartBackgroundPresets";
 
 const tahoeCursorUrl = cursorSetAssets.tahoe.arrow.url;
 const BUILTIN_CURSOR_PREVIEW_SIZE = 28;
 const BUILTIN_CURSOR_PREVIEW_FRAME_SIZE = 48;
+const WEBCAM_SMART_BACKGROUND_QUALITIES: WebcamSmartBackgroundQuality[] = ["fast", "balanced"];
+
+function getSmartBackgroundPresetPreviewStyle(
+	preset: WebcamSmartBackgroundPreset,
+	imagePreviewUrl?: string,
+): React.CSSProperties {
+	if (preset.kind === "image") {
+		return {
+			backgroundColor: preset.fallbackColor,
+			backgroundImage: `url(${imagePreviewUrl ?? preset.assetPath ?? ""})`,
+			backgroundPosition: "center",
+			backgroundSize: "cover",
+		};
+	}
+
+	return {
+		background: preset.previewCss,
+	};
+}
 
 function getStepPrecision(step: number): number {
 	if (!Number.isFinite(step) || step <= 0) return 0;
@@ -277,7 +307,11 @@ function ExtensionSettingsSection({
 						<div key={field.id} className="mt-1">
 							<SliderControl
 								label={field.label}
-								value={typeof value === "number" ? value : (field.defaultValue as number)}
+								value={
+									typeof value === "number"
+										? value
+										: (field.defaultValue as number)
+								}
 								defaultValue={field.defaultValue as number}
 								min={field.min ?? 0}
 								max={field.max ?? 1}
@@ -980,6 +1014,11 @@ export function SettingsPanel({
 	const [extensionWallpaperPreviewUrls, setExtensionWallpaperPreviewUrls] = useState<
 		Record<string, string>
 	>({});
+	const [smartBackgroundCategory, setSmartBackgroundCategory] =
+		useState<WebcamSmartBackgroundCategoryId>("gradient");
+	const [smartBackgroundPreviewUrls, setSmartBackgroundPreviewUrls] = useState<
+		Record<string, string>
+	>({});
 	const [customImages, setCustomImages] = useState<string[]>(
 		initialEditorPreferences.customWallpapers,
 	);
@@ -1036,6 +1075,42 @@ export function SettingsPanel({
 			mounted = false;
 		};
 	}, []);
+
+	useEffect(() => {
+		let mounted = true;
+		const loadSmartBackgroundPreviews = async () => {
+			const imagePresets = WEBCAM_SMART_BACKGROUND_PRESETS.filter(
+				(preset) => preset.kind === "image" && preset.assetPath,
+			);
+			const entries = await Promise.all(
+				imagePresets.map(async (preset) => {
+					try {
+						const assetUrl = await getAssetPath(
+							preset.assetPath?.replace(/^\/+/, "") ?? "",
+						);
+						const previewUrl = await getWallpaperThumbnailUrl(assetUrl);
+						return [preset.id, previewUrl] as const;
+					} catch {
+						return [preset.id, preset.assetPath ?? ""] as const;
+					}
+				}),
+			);
+			if (mounted) {
+				setSmartBackgroundPreviewUrls(Object.fromEntries(entries));
+			}
+		};
+		void loadSmartBackgroundPreviews();
+		return () => {
+			mounted = false;
+		};
+	}, []);
+
+	useEffect(() => {
+		const selectedPreset = getWebcamSmartBackgroundPreset(
+			webcam?.smartBackgroundPresetId ?? DEFAULT_WEBCAM_SMART_BACKGROUND_PRESET_ID,
+		);
+		setSmartBackgroundCategory(selectedPreset.categoryId);
+	}, [webcam?.smartBackgroundPresetId]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -1241,12 +1316,7 @@ export function SettingsPanel({
 		if (!isKnownWallpaper && isVideoWallpaperSource(selected)) {
 			setCustomImages((prev) => (prev.includes(selected) ? prev : [selected, ...prev]));
 		}
-	}, [
-		builtInWallpaperPaths,
-		extensionWallpaperPaths,
-		selected,
-		wallpaperPreviewPaths,
-	]);
+	}, [builtInWallpaperPaths, extensionWallpaperPaths, selected, wallpaperPreviewPaths]);
 
 	const imageWallpaperTiles = useMemo<WallpaperTile[]>(() => {
 		const imageWallpapers = builtInWallpapers.filter(
@@ -1382,6 +1452,14 @@ export function SettingsPanel({
 	const webcamPositionX = webcam?.positionX ?? DEFAULT_WEBCAM_POSITION_X;
 	const webcamPositionY = webcam?.positionY ?? DEFAULT_WEBCAM_POSITION_Y;
 	const webcamCrop = normalizeWebcamCropRegion(webcam?.cropRegion);
+	const webcamSmartBackgroundQuality =
+		webcam?.smartBackgroundQuality ?? DEFAULT_WEBCAM_SMART_BACKGROUND_QUALITY;
+	const webcamSmartBackgroundPreset = getWebcamSmartBackgroundPreset(
+		webcam?.smartBackgroundPresetId ?? DEFAULT_WEBCAM_SMART_BACKGROUND_PRESET_ID,
+	);
+	const smartBackgroundPresetsInCategory = WEBCAM_SMART_BACKGROUND_PRESETS.filter(
+		(preset) => preset.categoryId === smartBackgroundCategory,
+	);
 
 	const getWallpaperTileState = (candidateValue: string, previewPath?: string) => {
 		if (!selected) return false;
@@ -3069,8 +3147,8 @@ export function SettingsPanel({
 			</section>
 		);
 
-			const audioSectionContent = (
-				<section className="flex flex-col gap-3">
+		const audioSectionContent = (
+			<section className="flex flex-col gap-3">
 				<div className="flex items-center justify-between gap-3">
 					<SectionLabel>{tSettings("audio.volumeTitle", "Audio")}</SectionLabel>
 					<button
@@ -3084,8 +3162,8 @@ export function SettingsPanel({
 						{t("common.actions.reset", "Reset")}
 					</button>
 				</div>
-					<SliderControl
-						label={tSettings("audio.volume", "Volume")}
+				<SliderControl
+					label={tSettings("audio.volume", "Volume")}
 					value={selectedAudioVolume ?? 1}
 					defaultValue={1}
 					min={0}
@@ -3093,20 +3171,20 @@ export function SettingsPanel({
 					step={0.01}
 					onChange={(v) => onAudioVolumeChange?.(v)}
 					formatValue={(v) => `${Math.round(v * 100)}%`}
-						parseInput={(text) => parseFloat(text.replace(/%$/, "")) / 100}
+					parseInput={(text) => parseFloat(text.replace(/%$/, "")) / 100}
+				/>
+				<div className="flex items-center justify-between rounded-lg bg-foreground/[0.03] px-2.5 py-1.5">
+					<span className="text-[10px] text-muted-foreground">
+						{tSettings("audio.normalize", "Normalize")}
+					</span>
+					<Switch
+						checked={Boolean(selectedAudioNormalize)}
+						onCheckedChange={(v) => onAudioNormalizeChange?.(v)}
+						className="data-[state=checked]:bg-[#2563EB] scale-75"
 					/>
-					<div className="flex items-center justify-between rounded-lg bg-foreground/[0.03] px-2.5 py-1.5">
-						<span className="text-[10px] text-muted-foreground">
-							{tSettings("audio.normalize", "Normalize")}
-						</span>
-						<Switch
-							checked={Boolean(selectedAudioNormalize)}
-							onCheckedChange={(v) => onAudioNormalizeChange?.(v)}
-							className="data-[state=checked]:bg-[#2563EB] scale-75"
-						/>
-					</div>
-				</section>
-			);
+				</div>
+			</section>
+		);
 
 		const clipSectionContent = (
 			<section className="flex flex-col gap-2">
@@ -3183,7 +3261,10 @@ export function SettingsPanel({
 					{hasClipSourceAudio && (
 						<div className="flex items-center justify-between rounded-lg bg-foreground/[0.03] px-2.5 py-1.5">
 							<span className="text-[10px] text-muted-foreground">
-								{tSettings("clip.separateClipFromAudio", "Separate clip from audio")}
+								{tSettings(
+									"clip.separateClipFromAudio",
+									"Separate clip from audio",
+								)}
 							</span>
 							<Switch
 								checked={selectedClipShowSourceAudio ?? false}
@@ -3194,65 +3275,68 @@ export function SettingsPanel({
 					)}
 				</div>
 
-				{selectedClipId &&
-					hasClipSourceAudio &&
-					sourceAudioTrackMeta.length > 0 && (
-						<div className="mt-1 flex flex-col gap-3">
-							{sourceAudioTrackMeta.map((track) => {
-								const settings = sourceAudioTrackSettings[track.id] ?? {
-									volume: 1,
-									normalize: false,
-								};
-								return (
-									<div
-										key={track.id}
-										className="rounded-lg border border-foreground/10 bg-foreground/[0.03] px-3 py-2"
-									>
-										<div className="mb-2 flex items-center justify-between">
-											<span className="text-[11px] font-medium text-foreground">
-												{track.label}
-											</span>
-											<button
-												type="button"
-												onClick={() => {
-													onSourceAudioTrackVolumeChange?.(track.id, 1);
-													onSourceAudioTrackNormalizeChange?.(track.id, false);
-												}}
-												className="text-[10px] text-[#2563EB] transition-opacity hover:opacity-80"
-											>
-												{t("common.actions.reset", "Reset")}
-											</button>
-										</div>
-										<div className="mb-2 flex items-center justify-between rounded-lg bg-foreground/[0.03] px-2.5 py-1.5">
-											<span className="text-[10px] text-muted-foreground">
-												{tSettings("audio.normalize", "Normalize")}
-											</span>
-											<Switch
-												checked={settings.normalize}
-												onCheckedChange={(v) =>
-													onSourceAudioTrackNormalizeChange?.(track.id, v)
-												}
-												className="data-[state=checked]:bg-[#06b6d4] scale-75"
-											/>
-										</div>
-										<SliderControl
-											label={tSettings("audio.volume", "Volume")}
-											value={settings.volume}
-											defaultValue={1}
-											min={0}
-											max={1}
-											step={0.01}
-											onChange={(v) => onSourceAudioTrackVolumeChange?.(track.id, v)}
-											formatValue={(v) => `${Math.round(v * 100)}%`}
-											parseInput={(text) =>
-												parseFloat(text.replace(/%$/, "")) / 100
+				{selectedClipId && hasClipSourceAudio && sourceAudioTrackMeta.length > 0 && (
+					<div className="mt-1 flex flex-col gap-3">
+						{sourceAudioTrackMeta.map((track) => {
+							const settings = sourceAudioTrackSettings[track.id] ?? {
+								volume: 1,
+								normalize: false,
+							};
+							return (
+								<div
+									key={track.id}
+									className="rounded-lg border border-foreground/10 bg-foreground/[0.03] px-3 py-2"
+								>
+									<div className="mb-2 flex items-center justify-between">
+										<span className="text-[11px] font-medium text-foreground">
+											{track.label}
+										</span>
+										<button
+											type="button"
+											onClick={() => {
+												onSourceAudioTrackVolumeChange?.(track.id, 1);
+												onSourceAudioTrackNormalizeChange?.(
+													track.id,
+													false,
+												);
+											}}
+											className="text-[10px] text-[#2563EB] transition-opacity hover:opacity-80"
+										>
+											{t("common.actions.reset", "Reset")}
+										</button>
+									</div>
+									<div className="mb-2 flex items-center justify-between rounded-lg bg-foreground/[0.03] px-2.5 py-1.5">
+										<span className="text-[10px] text-muted-foreground">
+											{tSettings("audio.normalize", "Normalize")}
+										</span>
+										<Switch
+											checked={settings.normalize}
+											onCheckedChange={(v) =>
+												onSourceAudioTrackNormalizeChange?.(track.id, v)
 											}
+											className="data-[state=checked]:bg-[#06b6d4] scale-75"
 										/>
 									</div>
-								);
-							})}
-						</div>
-					)}
+									<SliderControl
+										label={tSettings("audio.volume", "Volume")}
+										value={settings.volume}
+										defaultValue={1}
+										min={0}
+										max={1}
+										step={0.01}
+										onChange={(v) =>
+											onSourceAudioTrackVolumeChange?.(track.id, v)
+										}
+										formatValue={(v) => `${Math.round(v * 100)}%`}
+										parseInput={(text) =>
+											parseFloat(text.replace(/%$/, "")) / 100
+										}
+									/>
+								</div>
+							);
+						})}
+					</div>
+				)}
 			</section>
 		);
 
@@ -3465,6 +3549,144 @@ export function SettingsPanel({
 									onCheckedChange={(mirror) => updateWebcam({ mirror })}
 									className="data-[state=checked]:bg-[#2563EB] scale-75"
 								/>
+							</div>
+							<div className="rounded-lg bg-foreground/[0.03] px-2.5 py-2">
+								<div className="flex items-center justify-between gap-3">
+									<div className="flex min-w-0 items-center gap-2">
+										<Palette className="h-3.5 w-3.5 text-muted-foreground" />
+										<span className="truncate text-[10px] text-muted-foreground">
+											{tSettings(
+												"effects.webcamSmartBackground",
+												"Smart background",
+											)}
+										</span>
+									</div>
+									<Switch
+										checked={
+											webcam?.smartBackgroundEnabled ??
+											DEFAULT_WEBCAM_SMART_BACKGROUND_ENABLED
+										}
+										onCheckedChange={(smartBackgroundEnabled) =>
+											updateWebcam({ smartBackgroundEnabled })
+										}
+										className="data-[state=checked]:bg-[#2563EB] scale-75"
+									/>
+								</div>
+								{webcam?.smartBackgroundEnabled ? (
+									<div className="mt-2 space-y-2">
+										<ToggleGroup
+											type="single"
+											value={webcamSmartBackgroundQuality}
+											onValueChange={(value) => {
+												if (value) {
+													updateWebcam({
+														smartBackgroundQuality:
+															value as WebcamSmartBackgroundQuality,
+													});
+												}
+											}}
+											className="grid grid-cols-2 gap-1 rounded-md bg-black/15 p-0.5"
+											aria-label={tSettings(
+												"effects.webcamSmartBackgroundQuality",
+												"Smart background quality",
+											)}
+										>
+											{WEBCAM_SMART_BACKGROUND_QUALITIES.map((quality) => (
+												<ToggleGroupItem
+													key={quality}
+													value={quality}
+													className="h-7 rounded-[5px] border-0 px-2 text-[10px] text-muted-foreground shadow-none data-[state=on]:bg-[#2563EB] data-[state=on]:text-white"
+												>
+													{quality === "fast"
+														? tSettings(
+																"effects.webcamSmartBackgroundFast",
+																"Fast",
+															)
+														: tSettings(
+																"effects.webcamSmartBackgroundBalanced",
+																"Quality",
+															)}
+												</ToggleGroupItem>
+											))}
+										</ToggleGroup>
+										<ToggleGroup
+											type="single"
+											value={smartBackgroundCategory}
+											onValueChange={(value) => {
+												if (value) {
+													setSmartBackgroundCategory(
+														value as WebcamSmartBackgroundCategoryId,
+													);
+												}
+											}}
+											className="grid grid-cols-5 gap-1 rounded-md bg-black/15 p-0.5"
+											aria-label={tSettings(
+												"effects.webcamSmartBackgroundCategory",
+												"Smart background category",
+											)}
+										>
+											{WEBCAM_SMART_BACKGROUND_CATEGORIES.map((category) => (
+												<ToggleGroupItem
+													key={category.id}
+													value={category.id}
+													className="h-6 rounded-[5px] border-0 px-1 text-[9px] text-muted-foreground shadow-none data-[state=on]:bg-foreground/10 data-[state=on]:text-foreground"
+												>
+													{tSettings(
+														`effects.webcamSmartBackgroundCategory.${category.id}`,
+														category.label,
+													)}
+												</ToggleGroupItem>
+											))}
+										</ToggleGroup>
+										<div className="grid grid-cols-3 gap-1.5">
+											{smartBackgroundPresetsInCategory.map((preset) => {
+												const isSelected =
+													webcamSmartBackgroundPreset.id === preset.id;
+												return (
+													<button
+														key={preset.id}
+														type="button"
+														title={preset.label}
+														aria-label={tSettings(
+															"effects.webcamSmartBackgroundPreset",
+															preset.label,
+														)}
+														onClick={() =>
+															updateWebcam({
+																smartBackgroundPresetId: preset.id,
+																smartBackgroundColor:
+																	preset.color ??
+																	preset.fallbackColor,
+															})
+														}
+														className={cn(
+															"group flex min-w-0 flex-col overflow-hidden rounded-md border bg-black/10 text-left transition-all",
+															isSelected
+																? "border-[#2563EB] ring-1 ring-[#2563EB]"
+																: "border-foreground/10 hover:border-foreground/25",
+														)}
+													>
+														<span
+															className="block h-10 w-full"
+															style={getSmartBackgroundPresetPreviewStyle(
+																preset,
+																smartBackgroundPreviewUrls[
+																	preset.id
+																],
+															)}
+														/>
+														<span className="truncate px-1.5 py-1 text-[9px] text-muted-foreground group-data-[state=on]:text-foreground">
+															{tSettings(
+																`effects.webcamSmartBackgroundPreset.${preset.id}`,
+																preset.label,
+															)}
+														</span>
+													</button>
+												);
+											})}
+										</div>
+									</div>
+								) : null}
 							</div>
 							<SliderControl
 								label={tSettings("effects.webcamSize")}

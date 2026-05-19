@@ -1,3 +1,4 @@
+import type { SourceAudioTrackSettings } from "@/components/video-editor/audio/audioTypes";
 import type {
 	ExportBackendPreference,
 	ExportEncodingMode,
@@ -20,7 +21,6 @@ import {
 import { DEFAULT_WALLPAPER_PATH } from "@/lib/wallpapers";
 import { ASPECT_RATIOS, type AspectRatio, isCustomAspectRatio } from "@/utils/aspectRatioUtils";
 import { CURSOR_MOTION_PRESETS, resolveCursorMotionPresetId } from "./cursorMotionPresets";
-import type { SourceAudioTrackSettings } from "@/components/video-editor/audio/audioTypes";
 import {
 	type AnnotationRegion,
 	type AudioRegion,
@@ -53,6 +53,10 @@ import {
 	DEFAULT_WEBCAM_REACT_TO_ZOOM,
 	DEFAULT_WEBCAM_SHADOW,
 	DEFAULT_WEBCAM_SIZE,
+	DEFAULT_WEBCAM_SMART_BACKGROUND_COLOR,
+	DEFAULT_WEBCAM_SMART_BACKGROUND_ENABLED,
+	DEFAULT_WEBCAM_SMART_BACKGROUND_PRESET_ID,
+	DEFAULT_WEBCAM_SMART_BACKGROUND_QUALITY,
 	DEFAULT_WEBCAM_TIME_OFFSET_MS,
 	DEFAULT_ZOOM_DEPTH,
 	DEFAULT_ZOOM_IN_EASING,
@@ -71,6 +75,7 @@ import {
 	type ZoomTransitionEasing,
 } from "./types";
 import { normalizeWebcamCropRegion } from "./webcamOverlay";
+import { isWebcamSmartBackgroundPresetId } from "./webcamSmartBackgroundPresets";
 
 export const PROJECT_VERSION = 1;
 
@@ -156,6 +161,15 @@ function clamp(value: number, min: number, max: number) {
 	return Math.min(max, Math.max(min, value));
 }
 
+function normalizeHexColor(value: unknown, fallback: string) {
+	if (typeof value !== "string") {
+		return fallback;
+	}
+
+	const normalized = value.trim();
+	return /^#[0-9a-f]{6}$/iu.test(normalized) ? normalized : fallback;
+}
+
 type PersistedDevMotionBlurSettings = {
 	zoomMotionBlurTuning?: unknown;
 };
@@ -163,10 +177,7 @@ type PersistedDevMotionBlurSettings = {
 export function stripPersistedDevMotionBlurSettings<T extends PersistedDevMotionBlurSettings>(
 	editor: T,
 ): Omit<T, keyof PersistedDevMotionBlurSettings> {
-	const {
-		zoomMotionBlurTuning: _zoomMotionBlurTuning,
-		...persistedEditor
-	} = editor;
+	const { zoomMotionBlurTuning: _zoomMotionBlurTuning, ...persistedEditor } = editor;
 
 	return persistedEditor;
 }
@@ -669,17 +680,17 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 					const startMs = Math.max(0, Math.min(rawStart, rawEnd));
 					const endMs = Math.max(startMs + 1, rawEnd);
 
-						return {
-							id: region.id,
-							startMs,
-							endMs,
-							audioPath: typeof region.audioPath === "string" ? region.audioPath : "",
-							volume: isFiniteNumber(region.volume) ? clamp(region.volume, 0, 1) : 1,
-							normalize: Boolean(region.normalize),
-							trackIndex: isFiniteNumber(region.trackIndex)
-								? Math.max(0, Math.floor(region.trackIndex))
-								: 0,
-						};
+					return {
+						id: region.id,
+						startMs,
+						endMs,
+						audioPath: typeof region.audioPath === "string" ? region.audioPath : "",
+						volume: isFiniteNumber(region.volume) ? clamp(region.volume, 0, 1) : 1,
+						normalize: Boolean(region.normalize),
+						trackIndex: isFiniteNumber(region.trackIndex)
+							? Math.max(0, Math.floor(region.trackIndex))
+							: 0,
+					};
 				})
 		: [];
 
@@ -1005,6 +1016,22 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 			margin: isFiniteNumber(webcam.margin)
 				? clamp(webcam.margin, 0, 96)
 				: DEFAULT_WEBCAM_MARGIN,
+			smartBackgroundEnabled:
+				typeof webcam.smartBackgroundEnabled === "boolean"
+					? webcam.smartBackgroundEnabled
+					: DEFAULT_WEBCAM_SMART_BACKGROUND_ENABLED,
+			smartBackgroundColor: normalizeHexColor(
+				webcam.smartBackgroundColor,
+				DEFAULT_WEBCAM_SMART_BACKGROUND_COLOR,
+			),
+			smartBackgroundQuality:
+				webcam.smartBackgroundQuality === "fast" ||
+				webcam.smartBackgroundQuality === "balanced"
+					? webcam.smartBackgroundQuality
+					: DEFAULT_WEBCAM_SMART_BACKGROUND_QUALITY,
+			smartBackgroundPresetId: isWebcamSmartBackgroundPresetId(webcam.smartBackgroundPresetId)
+				? webcam.smartBackgroundPresetId
+				: DEFAULT_WEBCAM_SMART_BACKGROUND_PRESET_ID,
 		},
 		sourceAudioTrackSettingsByClip:
 			editor.sourceAudioTrackSettingsByClip &&

@@ -8,8 +8,8 @@ import type {
 	CursorStyle,
 	CursorTelemetryPoint,
 	Padding,
-	SpeedRegion,
 	SourceAudioTrackSettings,
+	SpeedRegion,
 	TrimRegion,
 	WebcamOverlaySettings,
 	ZoomMotionBlurTuning,
@@ -146,6 +146,11 @@ interface VideoExporterConfig extends ExportConfig {
 	onProgress?: (progress: ExportProgress) => void;
 	preferredEncoderPath?: SupportedMp4EncoderPath | null;
 }
+
+type NativeH264StreamEncoderConfig = {
+	config: VideoEncoderConfig;
+	label: string;
+};
 
 type NativeAudioPlan =
 	| {
@@ -1512,6 +1517,9 @@ export class ModernVideoExporter {
 		if (this.config.webcam?.enabled && !this.getNativeWebcamSourcePath()) {
 			reasons.push("unsupported-webcam-source");
 		}
+		if (this.config.webcam?.enabled && this.config.webcam.smartBackgroundEnabled) {
+			reasons.push("unsupported-webcam-smart-background");
+		}
 
 		if (this.config.frame) {
 			reasons.push("unsupported-frame-overlay");
@@ -2562,6 +2570,51 @@ export class ModernVideoExporter {
 		}
 	}
 
+	private async getNativeH264StreamEncoderConfig(): Promise<NativeH264StreamEncoderConfig | null> {
+		const encoderCandidates = this.getEncoderCandidates();
+		const latencyModePreferences = getPreferredWebCodecsLatencyModes(this.config.encodingMode);
+		const baseConfig: Omit<
+			VideoEncoderConfig,
+			"codec" | "hardwareAcceleration" | "latencyMode"
+		> = {
+			width: this.config.width,
+			height: this.config.height,
+			bitrate: this.config.bitrate,
+			framerate: this.config.frameRate,
+			bitrateMode: "variable",
+			avc: { format: "annexb" },
+		};
+
+		for (const candidate of encoderCandidates) {
+			for (const latencyMode of latencyModePreferences) {
+				const config: VideoEncoderConfig = {
+					...baseConfig,
+					codec: candidate.codec,
+					hardwareAcceleration: candidate.hardwareAcceleration,
+					latencyMode,
+				};
+
+				try {
+					const support = await VideoEncoder.isConfigSupported(config);
+					if (support.supported) {
+						return {
+							config,
+							label: `${candidate.codec}/${candidate.hardwareAcceleration}/${latencyMode}`,
+						};
+					}
+				} catch (error) {
+					console.warn(
+						`[VideoExporter] ${NATIVE_EXPORT_ENGINE_NAME} encoder support check failed for ${candidate.codec}/${candidate.hardwareAcceleration}/${latencyMode}`,
+						error,
+					);
+				}
+			}
+		}
+
+		this.lastNativeExportError = `H.264 Annex B encoding is not supported at ${this.config.width}x${this.config.height}.`;
+		return null;
+	}
+
 	private async tryStartNativeVideoExport(): Promise<boolean> {
 		this.lastNativeExportError = null;
 
@@ -2586,28 +2639,8 @@ export class ModernVideoExporter {
 			return false;
 		}
 
-		const encoderConfig: VideoEncoderConfig = {
-			codec: "avc1.640034",
-			width: this.config.width,
-			height: this.config.height,
-			bitrate: this.config.bitrate,
-			framerate: this.config.frameRate,
-			hardwareAcceleration: "prefer-hardware",
-			avc: { format: "annexb" },
-		};
-
-		try {
-			const support = await VideoEncoder.isConfigSupported(encoderConfig);
-			if (!support.supported) {
-				this.lastNativeExportError = `H.264 Annex B encoding is not supported at ${this.config.width}x${this.config.height}.`;
-				return false;
-			}
-		} catch (error) {
-			this.lastNativeExportError = error instanceof Error ? error.message : String(error);
-			console.warn(
-				`[VideoExporter] ${NATIVE_EXPORT_ENGINE_NAME} encoder support check failed`,
-				error,
-			);
+		const nativeEncoderConfig = await this.getNativeH264StreamEncoderConfig();
+		if (!nativeEncoderConfig) {
 			return false;
 		}
 
@@ -2634,7 +2667,9 @@ export class ModernVideoExporter {
 		this.nativeExportSessionId = result.sessionId;
 		this.lastNativeExportError = null;
 		this.encodeBackend = "ffmpeg";
-		this.encoderName = "h264-stream-copy";
+		this.encoderName = `h264-stream-copy:${nativeEncoderConfig.label}`;
+		this.nativeStaticLayoutSkipReason = null;
+		this.nativeStaticLayoutSkipReasons = [];
 		this.pendingNativeWriteChunks = [];
 		this.pendingNativeWriteBytes = 0;
 
@@ -2656,7 +2691,7 @@ export class ModernVideoExporter {
 		});
 
 		try {
-			encoder.configure(encoderConfig);
+			encoder.configure(nativeEncoderConfig.config);
 		} catch (error) {
 			this.lastNativeExportError = error instanceof Error ? error.message : String(error);
 			try {
