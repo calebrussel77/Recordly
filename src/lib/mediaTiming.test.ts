@@ -7,6 +7,7 @@ import {
 	getEffectiveRecordingDurationMs,
 	getEffectiveVideoStreamDurationSeconds,
 	getMediaSyncPlaybackRate,
+	resolveCompanionAudioPreviewStartDelaySeconds,
 } from "./mediaTiming";
 
 describe("clampMediaTimeToDuration", () => {
@@ -36,6 +37,27 @@ describe("estimateCompanionAudioStartDelaySeconds", () => {
 		expect(estimateCompanionAudioStartDelaySeconds(10, 9.99)).toBe(0);
 		expect(estimateCompanionAudioStartDelaySeconds(10, 10.5)).toBe(0);
 		expect(estimateCompanionAudioStartDelaySeconds(600, 565)).toBe(0);
+	});
+});
+
+describe("resolveCompanionAudioPreviewStartDelaySeconds", () => {
+	it("preserves explicitly recorded microphone sidecar delay in preview", () => {
+		expect(
+			resolveCompanionAudioPreviewStartDelaySeconds({
+				timelineDuration: 80,
+				audioDuration: 78,
+				recordedStartDelayMs: 1475,
+			}),
+		).toBeCloseTo(1.475);
+	});
+
+	it("discards suspicious inferred delays when metadata is missing", () => {
+		expect(
+			resolveCompanionAudioPreviewStartDelaySeconds({
+				timelineDuration: 80,
+				audioDuration: 10,
+			}),
+		).toBe(0);
 	});
 });
 

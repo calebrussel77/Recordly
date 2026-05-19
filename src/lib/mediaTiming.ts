@@ -37,6 +37,40 @@ export function estimateCompanionAudioStartDelaySeconds(
 	return estimatedDelaySeconds;
 }
 
+export function resolveCompanionAudioPreviewStartDelaySeconds({
+	timelineDuration,
+	audioDuration,
+	recordedStartDelayMs,
+	maxInferredStartDelaySeconds = 5,
+}: {
+	timelineDuration?: number | null;
+	audioDuration?: number | null;
+	recordedStartDelayMs?: number | null;
+	maxInferredStartDelaySeconds?: number;
+}): number {
+	const rawStartDelaySeconds = estimateCompanionAudioStartDelaySeconds(
+		timelineDuration,
+		audioDuration,
+		recordedStartDelayMs,
+	);
+	const hasRecordedStartDelay =
+		Number.isFinite(recordedStartDelayMs) && (recordedStartDelayMs ?? 0) >= 0;
+	if (hasRecordedStartDelay) {
+		return rawStartDelaySeconds;
+	}
+
+	if (
+		Number.isFinite(timelineDuration) &&
+		(rawStartDelaySeconds >= Math.max(0, (timelineDuration ?? 0) - 0.01) ||
+			rawStartDelaySeconds >
+				Math.max(maxInferredStartDelaySeconds, (timelineDuration ?? 0) * 0.9))
+	) {
+		return 0;
+	}
+
+	return rawStartDelaySeconds;
+}
+
 export function getMediaSyncPlaybackRate({
 	basePlaybackRate,
 	currentTime,

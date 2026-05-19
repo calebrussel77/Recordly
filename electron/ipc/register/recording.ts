@@ -1610,43 +1610,59 @@ export function registerRecordingHandlers(
 		) => {
 			const baseName = videoPath.replace(/\.[^.]+$/, "");
 			const sidecarPath = `${baseName}.mic.wav`;
+			const webmSidecarPath = `${baseName}.mic.webm`;
 			const sourceWebmPath = `${baseName}.mic.source.webm`;
 			const tempWebmPath = `${sourceWebmPath}.tmp`;
 
 			try {
 				await fs.writeFile(tempWebmPath, Buffer.from(audioData));
-				await execFileAsync(
-					getFfmpegBinaryPath(),
-					[
-						"-y",
-						"-hide_banner",
-						"-nostdin",
-						"-nostats",
-						"-i",
-						tempWebmPath,
-						"-vn",
-						"-ac",
-						"1",
-						"-ar",
-						"48000",
-						"-af",
+				let resolvedSidecarPath = sidecarPath;
+				let conversionErrorMessage: string | null = null;
+				try {
+					await execFileAsync(
+						getFfmpegBinaryPath(),
 						[
-							...getBrowserMicSidecarFilters(options?.browserMicrophoneProfile),
-							"aresample=async=1:first_pts=0",
-						].join(","),
-						"-c:a",
-						"pcm_s16le",
-						sidecarPath,
-					],
-					{ timeout: 120000, maxBuffer: 10 * 1024 * 1024 },
-				);
-				if (shouldKeepRecordingAudioSidecars()) {
-					await fs.rename(tempWebmPath, sourceWebmPath).catch(async () => {
-						await fs.copyFile(tempWebmPath, sourceWebmPath);
+							"-y",
+							"-hide_banner",
+							"-nostdin",
+							"-nostats",
+							"-i",
+							tempWebmPath,
+							"-vn",
+							"-ac",
+							"1",
+							"-ar",
+							"48000",
+							"-af",
+							[
+								...getBrowserMicSidecarFilters(options?.browserMicrophoneProfile),
+								"aresample=async=1:first_pts=0",
+							].join(","),
+							"-c:a",
+							"pcm_s16le",
+							sidecarPath,
+						],
+						{ timeout: 120000, maxBuffer: 10 * 1024 * 1024 },
+					);
+					if (shouldKeepRecordingAudioSidecars()) {
+						await fs.rename(tempWebmPath, sourceWebmPath).catch(async () => {
+							await fs.copyFile(tempWebmPath, sourceWebmPath);
+							await fs.rm(tempWebmPath, { force: true });
+						});
+					} else {
+						await fs.rm(tempWebmPath, { force: true });
+					}
+				} catch (conversionError) {
+					conversionErrorMessage = String(conversionError);
+					console.warn(
+						"Failed to convert microphone sidecar to WAV; keeping WebM sidecar:",
+						conversionError,
+					);
+					resolvedSidecarPath = webmSidecarPath;
+					await fs.rename(tempWebmPath, webmSidecarPath).catch(async () => {
+						await fs.copyFile(tempWebmPath, webmSidecarPath);
 						await fs.rm(tempWebmPath, { force: true });
 					});
-				} else {
-					await fs.rm(tempWebmPath, { force: true });
 				}
 				const startDelayMs = options?.startDelayMs;
 				const mediaTrackSettings = pickPrimitiveRecord(options?.mediaTrackSettings);
@@ -1705,7 +1721,7 @@ export function registerRecordingHandlers(
 				};
 				if (Object.keys(metadata).length > 0) {
 					try {
-						await fs.writeFile(`${sidecarPath}.json`, JSON.stringify(metadata));
+						await fs.writeFile(`${resolvedSidecarPath}.json`, JSON.stringify(metadata));
 					} catch (metadataError) {
 						console.warn(
 							"Failed to store microphone sidecar timing metadata:",
@@ -1717,10 +1733,16 @@ export function registerRecordingHandlers(
 					backend: "browser-store",
 					phase: "mic-sidecar",
 					outputPath: videoPath,
-					microphonePath: sidecarPath,
+					microphonePath: resolvedSidecarPath,
 					details: {
 						sourceBytes: audioData.byteLength,
-						sourceWebmPath: shouldKeepRecordingAudioSidecars() ? sourceWebmPath : null,
+						sourceWebmPath:
+							resolvedSidecarPath === webmSidecarPath
+								? webmSidecarPath
+								: shouldKeepRecordingAudioSidecars()
+									? sourceWebmPath
+									: null,
+						conversionError: conversionErrorMessage,
 						metadata,
 					},
 				}).catch((diagnosticsError) => {
@@ -1729,11 +1751,12 @@ export function registerRecordingHandlers(
 						diagnosticsError,
 					);
 				});
-				return { success: true, path: sidecarPath };
+				return { success: true, path: resolvedSidecarPath };
 			} catch (error) {
 				await Promise.all([
 					fs.rm(tempWebmPath, { force: true }).catch(() => undefined),
 					fs.rm(sidecarPath, { force: true }).catch(() => undefined),
+					fs.rm(webmSidecarPath, { force: true }).catch(() => undefined),
 				]);
 				console.error("Failed to store microphone sidecar:", error);
 				return { success: false, error: String(error) };

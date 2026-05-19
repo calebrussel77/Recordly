@@ -381,4 +381,45 @@ describe("getCompanionAudioFallbackPaths", () => {
 			"Recorded output is too small to contain playable video",
 		);
 	});
+
+	it("accepts recordings with a valid video stream duration from ffprobe", async () => {
+		const videoPath = path.join(tempRoot, "recording-456.mp4");
+		await fs.writeFile(videoPath, Buffer.alloc(2048));
+		execFileMock.mockImplementation(
+			(
+				file: string,
+				_args: string[],
+				_options: Record<string, unknown>,
+				callback: ExecFileCallback,
+			) => {
+				if (file === "ffprobe") {
+					callback(
+						null,
+						JSON.stringify({
+							streams: [
+								{
+									duration: "180.959583",
+									nb_frames: "9594",
+									avg_frame_rate: "23025600/434303",
+								},
+							],
+						}),
+						"",
+					);
+					return;
+				}
+
+				callback(new Error("ffmpeg should not be required"));
+			},
+		);
+
+		const { validateRecordedVideo } = await import("./diagnostics");
+
+		await expect(validateRecordedVideo(videoPath)).resolves.toMatchObject({
+			fileSizeBytes: 2048,
+			durationSeconds: 180.959583,
+		});
+		expect(execFileMock).toHaveBeenCalledTimes(1);
+		expect(execFileMock.mock.calls[0]?.[0]).toBe("ffprobe");
+	});
 });

@@ -18,6 +18,8 @@ function buildSidecarAudioCandidates(sourcePath: string): string[] {
 		`${dir}${baseName}.mic.wav`,
 		`${dir}${baseName}.system.m4a`,
 		`${dir}${baseName}.mic.m4a`,
+		`${dir}${baseName}.system.webm`,
+		`${dir}${baseName}.mic.webm`,
 	];
 }
 

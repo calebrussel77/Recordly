@@ -478,10 +478,10 @@ export async function getCompanionAudioStartDelayMs(companionPath: string) {
 }
 
 export async function hasEmbeddedAudioStream(videoPath: string) {
-	const ffmpegPath = getFfmpegBinaryPath();
 	let stderr = "";
 
 	try {
+		const ffmpegPath = getFfmpegBinaryPath();
 		const result = await execFileAsync(
 			ffmpegPath,
 			["-hide_banner", "-i", videoPath, "-map", "0:a:0", "-frames:a", "1", "-f", "null", "-"],
@@ -564,33 +564,38 @@ export async function validateRecordedVideo(videoPath: string) {
 		);
 	}
 
-	const ffmpegPath = getFfmpegBinaryPath();
-	let stderr = "";
+	const streamProbe = await probeVideoStreamDuration(videoPath);
+	if (streamProbe?.durationSeconds && streamProbe.durationSeconds > 0) {
+		return {
+			fileSizeBytes: stat.size,
+			durationSeconds: streamProbe.durationSeconds,
+		};
+	}
 
 	try {
+		const ffmpegPath = getFfmpegBinaryPath();
 		const result = await execFileAsync(
 			ffmpegPath,
 			["-hide_banner", "-i", videoPath, "-map", "0:v:0", "-frames:v", "1", "-f", "null", "-"],
 			{ timeout: 20000, maxBuffer: 10 * 1024 * 1024 },
 		);
-		stderr = result.stderr;
+		const stderr = result.stderr;
+		if (!/Stream #.*Video:/i.test(stderr)) {
+			throw new Error(`Recorded output does not contain a readable video stream: ${videoPath}`);
+		}
+
+		const durationSeconds = parseFfmpegDurationSeconds(stderr);
+		if (durationSeconds === null || durationSeconds <= 0) {
+			throw new Error(`Recorded output has an invalid duration: ${videoPath}`);
+		}
+
+		return {
+			fileSizeBytes: stat.size,
+			durationSeconds,
+		};
 	} catch (error) {
 		const execError = error as NodeJS.ErrnoException & { stderr?: string };
 		const output = execError.stderr?.trim();
 		throw new Error(output || `Recorded output could not be decoded: ${videoPath}`);
 	}
-
-	if (!/Stream #.*Video:/i.test(stderr)) {
-		throw new Error(`Recorded output does not contain a readable video stream: ${videoPath}`);
-	}
-
-	const durationSeconds = parseFfmpegDurationSeconds(stderr);
-	if (durationSeconds === null || durationSeconds <= 0) {
-		throw new Error(`Recorded output has an invalid duration: ${videoPath}`);
-	}
-
-	return {
-		fileSizeBytes: stat.size,
-		durationSeconds,
-	};
 }

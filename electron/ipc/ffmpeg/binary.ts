@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { app } from "electron";
 
 const nodeRequire = createRequire(import.meta.url);
+const runnableBinaryCache = new Map<string, boolean>();
 
 export function loadFfmpegStatic(): string | null {
 	try {
@@ -116,6 +117,24 @@ export function resolveSystemFfprobeBinaryPath(): string | null {
 	return null;
 }
 
+function isRunnableBinary(binaryPath: string, versionArg: string) {
+	const cacheKey = `${binaryPath}\0${versionArg}`;
+	const cached = runnableBinaryCache.get(cacheKey);
+	if (typeof cached === "boolean") {
+		return cached;
+	}
+
+	const result = spawnSync(binaryPath, [versionArg], {
+		encoding: "utf-8",
+		timeout: 5000,
+		windowsHide: true,
+	});
+
+	const isRunnable = !result.error && result.status === 0;
+	runnableBinaryCache.set(cacheKey, isRunnable);
+	return isRunnable;
+}
+
 export function getFfmpegBinaryPath(): string {
 	const ffmpegStatic = loadFfmpegStatic();
 	if (ffmpegStatic && typeof ffmpegStatic === "string") {
@@ -123,7 +142,7 @@ export function getFfmpegBinaryPath(): string {
 			? ffmpegStatic.replace(/\.asar([/\\])/, ".asar.unpacked$1")
 			: ffmpegStatic;
 
-		if (existsSync(bundledPath)) {
+		if (existsSync(bundledPath) && isRunnableBinary(bundledPath, "-version")) {
 			return bundledPath;
 		}
 	}
@@ -145,7 +164,7 @@ export function getFfprobeBinaryPath(): string {
 			? ffprobeStatic.replace(/\.asar([/\\])/, ".asar.unpacked$1")
 			: ffprobeStatic;
 
-		if (existsSync(bundledPath)) {
+		if (existsSync(bundledPath) && isRunnableBinary(bundledPath, "-version")) {
 			return bundledPath;
 		}
 	}
