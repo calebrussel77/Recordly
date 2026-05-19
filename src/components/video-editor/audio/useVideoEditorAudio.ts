@@ -28,6 +28,7 @@ function extractLocalPathFromMediaServerUrl(input: string | null | undefined): s
 
 interface UseVideoEditorAudioParams {
 	currentSourcePath: string | null;
+	sourceAudioRefreshKey?: number;
 	selectedClipId: string | null;
 	clipRegions: ClipRegion[];
 	audioRegions: AudioRegion[];
@@ -51,6 +52,7 @@ interface UseVideoEditorAudioParams {
 
 export function useVideoEditorAudio({
 	currentSourcePath,
+	sourceAudioRefreshKey = 0,
 	selectedClipId,
 	clipRegions,
 	audioRegions,
@@ -75,6 +77,7 @@ export function useVideoEditorAudio({
 	const { sourceAudioFallbackPaths, sourceAudioFallbackStartDelayMsByPath } =
 		useSourceAudioFallback({
 			currentSourcePath: fallbackLookupSourcePath,
+			refreshKey: sourceAudioRefreshKey,
 			summarizeErrorMessage,
 		});
 

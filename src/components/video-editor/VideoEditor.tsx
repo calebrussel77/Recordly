@@ -666,6 +666,7 @@ export default function VideoEditor() {
 	const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
 	const [audioRegions, setAudioRegions] = useState<AudioRegion[]>([]);
 	const [selectedAudioId, setSelectedAudioId] = useState<string | null>(null);
+	const [sourceAudioRefreshKey, setSourceAudioRefreshKey] = useState(0);
 	const [sourceAudioTrackSettingsByClip, setSourceAudioTrackSettingsByClip] = useState<
 		Record<string, SourceAudioTrackSettings>
 	>({});
@@ -2527,6 +2528,7 @@ export default function VideoEditor() {
 					? (session.timeOffsetMs ?? prev.timeOffsetMs)
 					: DEFAULT_WEBCAM_TIME_OFFSET_MS,
 			}));
+			setSourceAudioRefreshKey((key) => key + 1);
 		});
 	}, [videoSourcePath]);
 
@@ -3369,6 +3371,7 @@ export default function VideoEditor() {
 	}, [clipRegions, speedRegions]);
 	const audio = useVideoEditorAudio({
 		currentSourcePath,
+		sourceAudioRefreshKey,
 		selectedClipId,
 		clipRegions,
 		audioRegions,

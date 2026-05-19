@@ -4,11 +4,13 @@ import { SOURCE_AUDIO_FALLBACK_TOAST_ID } from "@/components/video-editor/audio/
 
 interface UseSourceAudioFallbackParams {
   currentSourcePath: string | null;
+  refreshKey?: number;
   summarizeErrorMessage: (message: string) => string;
 }
 
 export function useSourceAudioFallback({
   currentSourcePath,
+  refreshKey = 0,
   summarizeErrorMessage,
 }: UseSourceAudioFallbackParams) {
   const [sourceAudioFallbackPaths, setSourceAudioFallbackPaths] = useState<string[]>([]);
@@ -62,7 +64,7 @@ export function useSourceAudioFallback({
     return () => {
       cancelled = true;
     };
-  }, [currentSourcePath, summarizeErrorMessage]);
+  }, [currentSourcePath, refreshKey, summarizeErrorMessage]);
 
   return { sourceAudioFallbackPaths, sourceAudioFallbackStartDelayMsByPath };
 }
