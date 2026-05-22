@@ -78,6 +78,7 @@ import {
 import { VideoMuxer } from "./muxer";
 import { roundNativeStaticLayoutContentSize } from "./nativeStaticLayoutGeometry";
 import { buildNativeStaticLayoutCursorTelemetry } from "./nativeStaticLayoutTelemetry";
+import { resolveSourceAudioFallbackPaths } from "./sourceAudioFallback";
 import { type DecodedVideoInfo, StreamingVideoDecoder } from "./streamingDecoder";
 import type {
 	ExportConfig,
@@ -169,6 +170,7 @@ type NativeAudioPlan =
 	| {
 			audioMode: "edited-track";
 			strategy: "offline-render-fallback";
+			sourceAudioFallbackPaths?: string[];
 	  }
 	| {
 			audioMode: "edited-track";
@@ -1229,6 +1231,26 @@ export class ModernVideoExporter {
 		return buildNativeStaticLayoutTimelineSegments(sourceSegments);
 	}
 
+	private getNativeAudioFallbackPaths(videoInfo: DecodedVideoInfo): string[] {
+		const sourceAudioFallbackPaths = (this.config.sourceAudioFallbackPaths ?? []).filter(
+			(audioPath) => typeof audioPath === "string" && audioPath.trim().length > 0,
+		);
+		const localVideoSourcePath = this.getNativeVideoSourcePath();
+		if (!videoInfo.hasAudio || !localVideoSourcePath) {
+			return sourceAudioFallbackPaths;
+		}
+
+		const { externalAudioPaths } = resolveSourceAudioFallbackPaths(
+			localVideoSourcePath,
+			sourceAudioFallbackPaths,
+		);
+		if (externalAudioPaths.length === 0) {
+			return sourceAudioFallbackPaths;
+		}
+
+		return [localVideoSourcePath, ...externalAudioPaths];
+	}
+
 	private shouldUseNativeStaticLayoutTimelineMap(
 		videoInfo: DecodedVideoInfo,
 		effectiveDurationSec: number,
@@ -1248,9 +1270,7 @@ export class ModernVideoExporter {
 	private buildNativeAudioPlan(videoInfo: DecodedVideoInfo): NativeAudioPlan {
 		const speedRegions = this.config.speedRegions ?? [];
 		const audioRegions = this.config.audioRegions ?? [];
-		const sourceAudioFallbackPaths = (this.config.sourceAudioFallbackPaths ?? []).filter(
-			(audioPath) => typeof audioPath === "string" && audioPath.trim().length > 0,
-		);
+		const sourceAudioFallbackPaths = this.getNativeAudioFallbackPaths(videoInfo);
 		const hasTimedSourceAudioFallback = sourceAudioFallbackPaths.some(
 			(audioPath) =>
 				(this.config.sourceAudioFallbackStartDelayMsByPath?.[audioPath] ?? 0) > 0,
@@ -1343,6 +1363,7 @@ export class ModernVideoExporter {
 			return {
 				audioMode: "edited-track",
 				strategy: "offline-render-fallback",
+				sourceAudioFallbackPaths,
 			};
 		}
 
@@ -1350,6 +1371,7 @@ export class ModernVideoExporter {
 			return {
 				audioMode: "edited-track",
 				strategy: "offline-render-fallback",
+				sourceAudioFallbackPaths,
 			};
 		}
 
@@ -1900,6 +1922,7 @@ export class ModernVideoExporter {
 	private async renderEditedAudioForNativeMux(
 		description: string,
 		onProgress: (progress: number) => void,
+		sourceAudioFallbackPaths = this.config.sourceAudioFallbackPaths,
 	) {
 		this.audioProcessor = new AudioProcessor();
 		this.audioProcessor.setOnProgress(onProgress);
@@ -1910,7 +1933,7 @@ export class ModernVideoExporter {
 					this.config.trimRegions,
 					this.config.speedRegions,
 					this.config.audioRegions,
-					this.config.sourceAudioFallbackPaths,
+					sourceAudioFallbackPaths,
 					this.config.sourceAudioFallbackStartDelayMsByPath,
 					this.config.sourceAudioTrackSettings,
 					this.config.clipRegions,
@@ -1958,6 +1981,7 @@ export class ModernVideoExporter {
 					"Native static-layout edited audio rendering",
 					(progress) =>
 						this.reportProgress(0, totalFrames, "preparing", undefined, progress),
+					audioPlan.sourceAudioFallbackPaths,
 				);
 
 				return {
@@ -2773,6 +2797,7 @@ export class ModernVideoExporter {
 			const renderedAudio = await this.renderEditedAudioForNativeMux(
 				`${NATIVE_EXPORT_ENGINE_NAME} edited audio rendering`,
 				(progress) => this.reportFinalizingProgress(this.processedFrameCount, 99, progress),
+				audioPlan.sourceAudioFallbackPaths,
 			);
 			editedAudioBuffer = renderedAudio.editedAudioData;
 			editedAudioMimeType = renderedAudio.editedAudioMimeType;
@@ -2870,6 +2895,7 @@ export class ModernVideoExporter {
 			const renderedAudio = await this.renderEditedAudioForNativeMux(
 				"FFmpeg edited audio rendering",
 				(progress) => this.reportFinalizingProgress(this.processedFrameCount, 99, progress),
+				audioPlan.sourceAudioFallbackPaths,
 			);
 			editedAudioBuffer = renderedAudio.editedAudioData;
 			editedAudioMimeType = renderedAudio.editedAudioMimeType;
