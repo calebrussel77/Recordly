@@ -150,6 +150,7 @@ interface VideoExporterConfig extends ExportConfig {
 	previewHeight?: number;
 	onProgress?: (progress: ExportProgress) => void;
 	preferredEncoderPath?: SupportedMp4EncoderPath | null;
+	experimentalNvidiaCudaExport?: boolean;
 }
 
 type NativeH264StreamEncoderConfig = {

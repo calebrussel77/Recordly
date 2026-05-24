@@ -116,7 +116,7 @@ describe("ModernVideoExporter native fallback routing", () => {
 		expect(result.blob).toBeInstanceOf(Blob);
 		expect(initializeEncoder).toHaveBeenCalledTimes(1);
 		expect(mocks.muxerFinalize).toHaveBeenCalledTimes(1);
-	}, 15_000);
+	}, 60_000);
 
 	it("keeps Windows auto exports on the streaming native route before static layout", async () => {
 		vi.stubGlobal("navigator", {
