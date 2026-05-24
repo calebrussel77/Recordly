@@ -387,8 +387,12 @@ export class ModernVideoExporter {
 				const runtimePlatform = this.getRuntimePlatform();
 				let useNativeEncoder = false;
 				let triedNativeStaticLayoutWithProbe = false;
+				const shouldTryNativeStaticLayout =
+					backendPreference === "breeze" ||
+					this.config.experimentalNvidiaCudaExport === true;
 				let shouldDeferNativeEncoderStart =
 					backendPreference === "breeze" ||
+					this.config.experimentalNvidiaCudaExport === true ||
 					shouldPreferNativeStaticLayoutBeforeBreeze(runtimePlatform, backendPreference);
 				this.lastNativeExportError = null;
 
@@ -483,10 +487,7 @@ export class ModernVideoExporter {
 					maxInFlightNativeWrites: this.maxNativeWriteInFlight,
 				});
 
-				if (
-					(backendPreference === "auto" || backendPreference === "breeze") &&
-					!useNativeEncoder
-				) {
+				if (shouldTryNativeStaticLayout && !useNativeEncoder) {
 					const nativeVideoInfo = await this.loadNativeStaticLayoutVideoInfo();
 					if (nativeVideoInfo) {
 						triedNativeStaticLayoutWithProbe = true;
@@ -535,7 +536,7 @@ export class ModernVideoExporter {
 				const totalFrames = Math.ceil(effectiveDuration * this.config.frameRate);
 
 				if (
-					(backendPreference === "auto" || backendPreference === "breeze") &&
+					shouldTryNativeStaticLayout &&
 					!useNativeEncoder &&
 					!triedNativeStaticLayoutWithProbe
 				) {
