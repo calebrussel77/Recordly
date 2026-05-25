@@ -1,6 +1,6 @@
 import macosClosedHandUrl from "../../../assets/cursors/macos/closedhand-1__50-50.svg";
 import macosCrosshairUrl from "../../../assets/cursors/macos/crosshair-1__50-50.svg";
-import macosTextUrl from "../../../assets/cursors/macos/ibeam-1__50-50.svg";
+import macosTextUrl from "../../../assets/cursors/macos/ibeamstroke-1__50-50.svg";
 import macosNotAllowedUrl from "../../../assets/cursors/macos/notallowed-1__23-0.svg";
 import macosOpenHandUrl from "../../../assets/cursors/macos/openhand-1__50-50.svg";
 import macosArrowUrl from "../../../assets/cursors/macos/pointer-1__34-24.svg";
@@ -9,7 +9,7 @@ import macosResizeEwUrl from "../../../assets/cursors/macos/resizeeastwest-1__50
 import macosResizeNsUrl from "../../../assets/cursors/macos/resizenorthsouth-1__50-50.svg";
 import tahoeClosedHandUrl from "../../../assets/cursors/tahoe/closedhand-1__50-46.svg";
 import tahoeCrosshairUrl from "../../../assets/cursors/tahoe/crosshair-1__50-50.svg";
-import tahoeTextUrl from "../../../assets/cursors/tahoe/ibeam-1__50-44.svg";
+import tahoeTextUrl from "../../../assets/cursors/tahoe/ibeamstroke-1__50-44.svg";
 import tahoeNotAllowedUrl from "../../../assets/cursors/tahoe/notallowed-1__23-0.svg";
 import tahoeOpenHandUrl from "../../../assets/cursors/tahoe/openhand-1__55-57.svg";
 import tahoeArrowUrl from "../../../assets/cursors/tahoe/pointer-1__14-6.svg";
