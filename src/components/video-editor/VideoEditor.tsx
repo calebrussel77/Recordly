@@ -119,6 +119,7 @@ import { resolveAutoCaptionSourcePath } from "./autoCaptionSource";
 import { CropControl } from "./CropControl";
 import { ExportSettingsMenu } from "./ExportSettingsMenu";
 import ExtensionManager from "./ExtensionManager";
+import { resolveEditorArrowKeySeekTime } from "./editorKeyboardSeek";
 import {
 	type EditorPreset,
 	type EditorPresetSnapshot,
@@ -4073,7 +4074,13 @@ export default function VideoEditor() {
 			const isEditableTarget =
 				target instanceof HTMLInputElement ||
 				target instanceof HTMLTextAreaElement ||
+				target instanceof HTMLSelectElement ||
 				target?.isContentEditable;
+			const shouldKeepNativeArrowKeyHandling =
+				isEditableTarget ||
+				target?.closest(
+					'[role="slider"], [role="spinbutton"], [data-radix-slider-thumb]',
+				) !== null;
 
 			const usesPrimaryModifier = isMac ? e.metaKey : e.ctrlKey;
 			const key = e.key.toLowerCase();
@@ -4094,6 +4101,31 @@ export default function VideoEditor() {
 				if (!isEditableTarget) {
 					e.preventDefault();
 					handleRedo();
+				}
+				return;
+			}
+
+			if (
+				(e.key === "ArrowLeft" || e.key === "ArrowRight") &&
+				!e.ctrlKey &&
+				!e.metaKey &&
+				!e.altKey
+			) {
+				if (shouldKeepNativeArrowKeyHandling) {
+					return;
+				}
+
+				const nextTime = resolveEditorArrowKeySeekTime({
+					key: e.key,
+					currentTimeSeconds: timelinePlayheadTime,
+					durationSeconds: timelineDuration,
+					frameRate: mp4FrameRate,
+					shiftKey: e.shiftKey,
+				});
+
+				if (nextTime !== null) {
+					e.preventDefault();
+					handleSeek(nextTime, { pause: true });
 				}
 				return;
 			}
@@ -4126,7 +4158,16 @@ export default function VideoEditor() {
 
 		window.addEventListener("keydown", handleKeyDown, { capture: true });
 		return () => window.removeEventListener("keydown", handleKeyDown, { capture: true });
-	}, [shortcuts, isMac, handleUndo, handleRedo]);
+	}, [
+		shortcuts,
+		isMac,
+		handleUndo,
+		handleRedo,
+		timelinePlayheadTime,
+		timelineDuration,
+		mp4FrameRate,
+		handleSeek,
+	]);
 
 	useEffect(() => {
 		if (selectedZoomId && !zoomRegions.some((region) => region.id === selectedZoomId)) {
