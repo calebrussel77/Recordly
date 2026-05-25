@@ -15,6 +15,7 @@ import {
 } from "../constants";
 import {
 	approvedLocalReadPaths,
+	customRecordingsDir,
 	currentProjectPath,
 	setCurrentProjectPath,
 	setCurrentRecordingSession,
@@ -40,22 +41,32 @@ export function getAssetRootPath() {
 	return path.join(app.getAppPath(), "public");
 }
 
+function normalizePathForPolicyComparison(filePath: string) {
+	const normalizedPath = normalizePath(filePath);
+	return process.platform === "win32" ? normalizedPath.toLowerCase() : normalizedPath;
+}
+
 export function isPathInsideDirectory(candidatePath: string, directoryPath: string) {
-	const normalizedCandidatePath = normalizePath(candidatePath);
-	const normalizedDirectoryPath = normalizePath(directoryPath);
+	const normalizedCandidatePath = normalizePathForPolicyComparison(candidatePath);
+	const normalizedDirectoryPath = normalizePathForPolicyComparison(directoryPath);
 	return (
 		normalizedCandidatePath === normalizedDirectoryPath ||
 		normalizedCandidatePath.startsWith(`${normalizedDirectoryPath}${path.sep}`)
 	);
 }
 
-export function isAllowedLocalReadPath(candidatePath: string) {
-	const allowedPrefixes = [
+function getAllowedLocalReadPrefixes() {
+	return [
+		customRecordingsDir,
 		RECORDINGS_DIR,
 		USER_DATA_PATH,
 		getAssetRootPath(),
 		app.getPath("temp"),
-	];
+	].filter((prefix): prefix is string => typeof prefix === "string" && prefix.trim().length > 0);
+}
+
+export function isAllowedLocalReadPath(candidatePath: string) {
+	const allowedPrefixes = getAllowedLocalReadPrefixes();
 	const normalizedCandidatePath = normalizePath(candidatePath);
 
 	// Canonicalize so a symlink placed under an allowed prefix can't smuggle in a
@@ -99,6 +110,7 @@ export function isAllowedLocalReadPath(candidatePath: string) {
 // permissive, but URL-based serving must stay scoped so arbitrary paths do not
 // become fetchable inside the app.
 export async function isAllowedLocalMediaPath(candidatePath: string) {
+	await getRecordingsDir();
 	const normalizedCandidatePath = normalizePath(candidatePath);
 	return isAllowedLocalReadPath(normalizedCandidatePath);
 }

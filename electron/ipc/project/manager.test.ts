@@ -78,6 +78,43 @@ describe("local media path policy", () => {
 		await expect(isAllowedLocalMediaPath(pendingExportPath)).resolves.toBe(true);
 	});
 
+	it("allows recordings directory media when Windows realpath casing differs", async () => {
+		if (process.platform !== "win32") {
+			return;
+		}
+
+		const recordingsPath = path.join(userDataPath, "recordings");
+		const audioPath = path.join(recordingsPath, "recording-1.mic.wav");
+		await fs.mkdir(recordingsPath, { recursive: true });
+		await fs.writeFile(audioPath, "test-audio");
+
+		const { isAllowedLocalMediaPath, resolveApprovedLocalMediaPath } = await import("./manager");
+		const resolvedAudioPath = await fs.realpath(audioPath);
+
+		await expect(isAllowedLocalMediaPath(audioPath.toUpperCase())).resolves.toBe(true);
+		await expect(resolveApprovedLocalMediaPath(audioPath.toUpperCase())).resolves.toBe(
+			resolvedAudioPath,
+		);
+	});
+
+	it("allows sidecar audio in a configured recordings directory", async () => {
+		const customRecordingsPath = path.join(tempRoot, "CustomRecordings");
+		const audioPath = path.join(customRecordingsPath, "recording-1.mic.wav");
+		await fs.mkdir(customRecordingsPath, { recursive: true });
+		await fs.writeFile(audioPath, "test-audio");
+		await fs.writeFile(
+			path.join(userDataPath, "recordings-settings.json"),
+			JSON.stringify({ recordingsDir: customRecordingsPath }),
+			"utf-8",
+		);
+
+		const { isAllowedLocalMediaPath, resolveApprovedLocalMediaPath } = await import("./manager");
+		const resolvedAudioPath = await fs.realpath(audioPath);
+
+		await expect(isAllowedLocalMediaPath(audioPath)).resolves.toBe(true);
+		await expect(resolveApprovedLocalMediaPath(audioPath)).resolves.toBe(resolvedAudioPath);
+	});
+
 	it("approves media-server access for approved external files resolved through the URL policy", async () => {
 		const downloadsPath = path.join(tempRoot, "Downloads");
 		const videoPath = path.join(downloadsPath, "external-video.mp4");
