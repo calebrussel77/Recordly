@@ -13,7 +13,6 @@ import {
 	systemPreferences,
 } from "electron";
 import { showCursor } from "../../cursorHider";
-import { getMonitorHandles } from "../monitorResolver";
 import { ALLOW_RECORDLY_WINDOW_CAPTURE } from "../constants";
 import { startWindowBoundsCapture, stopWindowBoundsCapture } from "../cursor/bounds";
 import { startInteractionCapture, stopInteractionCapture } from "../cursor/interaction";
@@ -31,6 +30,8 @@ import {
 	writeCursorTelemetry,
 } from "../cursor/telemetry";
 import { getFfmpegBinaryPath } from "../ffmpeg/binary";
+import { buildAtempoFilters, formatFfmpegSeconds } from "../ffmpeg/filters";
+import { getMonitorHandles } from "../monitorResolver";
 import {
 	ensureNativeCaptureHelperBinary,
 	ensureSwiftHelperBinary,
@@ -49,6 +50,7 @@ import {
 	getFileSizeIfPresent,
 	type MicrophoneChunkTimingEvent,
 	type MicrophonePauseInterval,
+	probeMediaDurationSeconds,
 	type RecordingDiagnosticsSnapshot,
 	recordNativeCaptureDiagnostics,
 	summarizeMicrophoneChunkTiming,
@@ -150,6 +152,91 @@ import {
 import { resolveWindowsCaptureDisplay } from "../windowsCaptureSelection";
 
 const execFileAsync = promisify(execFile);
+
+const MICROPHONE_SIDECAR_DURATION_TOLERANCE_SECONDS = 0.05;
+const MICROPHONE_SIDECAR_MAX_TEMPO_ADJUSTMENT_RATIO = 0.08;
+
+function normalizeExpectedDurationSeconds(value: unknown): number | null {
+	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+		return null;
+	}
+
+	return value / 1000;
+}
+
+async function reconcileMicrophoneSidecarDuration(
+	sidecarPath: string,
+	expectedDurationMs: unknown,
+) {
+	const expectedDurationSeconds = normalizeExpectedDurationSeconds(expectedDurationMs);
+	if (!expectedDurationSeconds) {
+		return null;
+	}
+
+	const actualDurationSeconds = await probeMediaDurationSeconds(sidecarPath);
+	if (!Number.isFinite(actualDurationSeconds) || actualDurationSeconds <= 0) {
+		return null;
+	}
+
+	const durationDeltaSeconds = expectedDurationSeconds - actualDurationSeconds;
+	if (Math.abs(durationDeltaSeconds) <= MICROPHONE_SIDECAR_DURATION_TOLERANCE_SECONDS) {
+		return null;
+	}
+
+	const tempoRatio = actualDurationSeconds / expectedDurationSeconds;
+	if (
+		!Number.isFinite(tempoRatio) ||
+		tempoRatio <= 0 ||
+		Math.abs(1 - tempoRatio) > MICROPHONE_SIDECAR_MAX_TEMPO_ADJUSTMENT_RATIO
+	) {
+		console.warn(
+			"[store-microphone-sidecar] Skipping duration reconciliation for suspicious ratio:",
+			{ sidecarPath, expectedDurationSeconds, actualDurationSeconds, tempoRatio },
+		);
+		return null;
+	}
+
+	const adjustedPath = `${sidecarPath}.duration-adjusted.wav`;
+	const filters = [
+		...buildAtempoFilters(tempoRatio),
+		`apad=pad_dur=${formatFfmpegSeconds(Math.abs(durationDeltaSeconds) * 1000)}`,
+		`atrim=duration=${formatFfmpegSeconds(expectedDurationSeconds * 1000)}`,
+		"aresample=async=1:first_pts=0",
+		"asetpts=PTS-STARTPTS",
+	];
+
+	await execFileAsync(
+		getFfmpegBinaryPath(),
+		[
+			"-y",
+			"-hide_banner",
+			"-nostdin",
+			"-nostats",
+			"-i",
+			sidecarPath,
+			"-vn",
+			"-ac",
+			"1",
+			"-ar",
+			"48000",
+			"-af",
+			filters.join(","),
+			"-c:a",
+			"pcm_s16le",
+			adjustedPath,
+		],
+		{ timeout: 120000, maxBuffer: 10 * 1024 * 1024 },
+	);
+	await fs.copyFile(adjustedPath, sidecarPath);
+	await fs.rm(adjustedPath, { force: true });
+
+	return {
+		actualDurationSeconds,
+		expectedDurationSeconds,
+		tempoRatio,
+		durationDeltaSeconds,
+	};
+}
 
 async function writeWindowsRecordingDiagnostics(
 	videoPath: string | null | undefined,
@@ -1598,6 +1685,7 @@ export function registerRecordingHandlers(
 			videoPath: string,
 			options?: {
 				startDelayMs?: number;
+				expectedDurationMs?: number;
 				browserMicrophoneProfile?: string;
 				requestedBrowserMicrophoneProfile?: string | null;
 				requestedConstraints?: unknown;
@@ -1618,6 +1706,9 @@ export function registerRecordingHandlers(
 				await fs.writeFile(tempWebmPath, Buffer.from(audioData));
 				let resolvedSidecarPath = sidecarPath;
 				let conversionErrorMessage: string | null = null;
+				let durationReconciliation: Awaited<
+					ReturnType<typeof reconcileMicrophoneSidecarDuration>
+				> = null;
 				try {
 					await execFileAsync(
 						getFfmpegBinaryPath(),
@@ -1652,6 +1743,17 @@ export function registerRecordingHandlers(
 					} else {
 						await fs.rm(tempWebmPath, { force: true });
 					}
+					try {
+						durationReconciliation = await reconcileMicrophoneSidecarDuration(
+							sidecarPath,
+							options?.expectedDurationMs,
+						);
+					} catch (durationError) {
+						console.warn(
+							"Failed to reconcile microphone sidecar duration; keeping converted WAV:",
+							durationError,
+						);
+					}
 				} catch (conversionError) {
 					conversionErrorMessage = String(conversionError);
 					console.warn(
@@ -1665,6 +1767,7 @@ export function registerRecordingHandlers(
 					});
 				}
 				const startDelayMs = options?.startDelayMs;
+				const expectedDurationMs = options?.expectedDurationMs;
 				const mediaTrackSettings = pickPrimitiveRecord(options?.mediaTrackSettings);
 				const audioInputDevices = pickAudioInputDevices(options?.audioInputDevices);
 				const mediaRecorder = isRecord(options?.mediaRecorder)
@@ -1697,6 +1800,22 @@ export function registerRecordingHandlers(
 				const metadata = {
 					...(Number.isFinite(startDelayMs) && (startDelayMs ?? 0) >= 0
 						? { startDelayMs: Math.round(startDelayMs ?? 0) }
+						: {}),
+					...(Number.isFinite(expectedDurationMs) && (expectedDurationMs ?? 0) > 0
+						? { expectedDurationMs: Math.round(expectedDurationMs ?? 0) }
+						: {}),
+					...(durationReconciliation
+						? {
+								durationReconciliation: {
+									actualDurationSeconds:
+										durationReconciliation.actualDurationSeconds,
+									expectedDurationSeconds:
+										durationReconciliation.expectedDurationSeconds,
+									tempoRatio: durationReconciliation.tempoRatio,
+									durationDeltaSeconds:
+										durationReconciliation.durationDeltaSeconds,
+								},
+							}
 						: {}),
 					...(typeof options?.browserMicrophoneProfile === "string"
 						? { browserMicrophoneProfile: options.browserMicrophoneProfile }
