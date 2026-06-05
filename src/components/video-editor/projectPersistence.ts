@@ -1,4 +1,7 @@
-import type { SourceAudioTrackSettings } from "@/components/video-editor/audio/audioTypes";
+import {
+	normalizeSourceAudioTrackSetting,
+	type SourceAudioTrackSettings,
+} from "@/components/video-editor/audio/audioTypes";
 import type {
 	ExportBackendPreference,
 	ExportEncodingMode,
@@ -159,6 +162,41 @@ function isFiniteNumber(value: unknown): value is number {
 
 function clamp(value: number, min: number, max: number) {
 	return Math.min(max, Math.max(min, value));
+}
+
+function normalizeSourceAudioTrackSettingsRecord(value: unknown): SourceAudioTrackSettings {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return {};
+	}
+
+	const normalized: SourceAudioTrackSettings = {};
+	for (const [trackId, setting] of Object.entries(value)) {
+		if (typeof trackId !== "string" || !trackId.trim()) {
+			continue;
+		}
+		normalized[trackId] =
+			setting && typeof setting === "object"
+				? normalizeSourceAudioTrackSetting(setting)
+				: normalizeSourceAudioTrackSetting();
+	}
+	return normalized;
+}
+
+function normalizeSourceAudioTrackSettingsByClip(
+	value: unknown,
+): Record<string, SourceAudioTrackSettings> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return {};
+	}
+
+	const normalized: Record<string, SourceAudioTrackSettings> = {};
+	for (const [clipId, settings] of Object.entries(value)) {
+		if (typeof clipId !== "string" || !clipId.trim()) {
+			continue;
+		}
+		normalized[clipId] = normalizeSourceAudioTrackSettingsRecord(settings);
+	}
+	return normalized;
 }
 
 function normalizeHexColor(value: unknown, fallback: string) {
@@ -1033,16 +1071,12 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 				? webcam.smartBackgroundPresetId
 				: DEFAULT_WEBCAM_SMART_BACKGROUND_PRESET_ID,
 		},
-		sourceAudioTrackSettingsByClip:
-			editor.sourceAudioTrackSettingsByClip &&
-			typeof editor.sourceAudioTrackSettingsByClip === "object"
-				? editor.sourceAudioTrackSettingsByClip
-				: {},
-		defaultSourceAudioTrackSettings:
-			editor.defaultSourceAudioTrackSettings &&
-			typeof editor.defaultSourceAudioTrackSettings === "object"
-				? editor.defaultSourceAudioTrackSettings
-				: {},
+		sourceAudioTrackSettingsByClip: normalizeSourceAudioTrackSettingsByClip(
+			editor.sourceAudioTrackSettingsByClip,
+		),
+		defaultSourceAudioTrackSettings: normalizeSourceAudioTrackSettingsRecord(
+			editor.defaultSourceAudioTrackSettings,
+		),
 		aspectRatio:
 			typeof editor.aspectRatio === "string" &&
 			(validAspectRatios.has(editor.aspectRatio as AspectRatio) ||

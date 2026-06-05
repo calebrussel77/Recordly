@@ -3,8 +3,8 @@ import {
 	SOURCE_AUDIO_NORMALIZE_GAIN,
 	type SourceAudioTrackSettings,
 } from "@/components/video-editor/audio/audioTypes";
-import { useSourceAudioTrackSettings } from "./useSourceAudioTrackSettings";
 import { getSourceTrackIdFromPath } from "@/lib/exporter/audioRoutingEngine";
+import { useSourceAudioTrackSettings } from "./useSourceAudioTrackSettings";
 
 interface UseClipAudioSettingsControllerParams {
 	selectedClipId: string | null;
@@ -35,6 +35,9 @@ export function useClipAudioSettingsController({
 		onSourceAudioTracksMetaChange,
 		onSelectedClipSourceAudioTrackVolumeChange,
 		onSelectedClipSourceAudioTrackNormalizeChange,
+		onSelectedClipSourceAudioTrackReduceNoiseChange,
+		onSelectedClipSourceAudioTrackEnhanceVoiceChange,
+		onSelectedClipSourceAudioTrackEnhanceVoiceIntensityChange,
 	} = useSourceAudioTrackSettings({
 		selectedClipId,
 		activeClipId,
@@ -87,6 +90,9 @@ export function useClipAudioSettingsController({
 		onSourceAudioTracksMetaChange,
 		onSelectedClipSourceAudioTrackVolumeChange,
 		onSelectedClipSourceAudioTrackNormalizeChange,
+		onSelectedClipSourceAudioTrackReduceNoiseChange,
+		onSelectedClipSourceAudioTrackEnhanceVoiceChange,
+		onSelectedClipSourceAudioTrackEnhanceVoiceIntensityChange,
 		embeddedSourcePreviewGain,
 		getSourceTrackPreviewGain,
 	};

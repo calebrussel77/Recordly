@@ -669,6 +669,13 @@ export default function VideoEditor() {
 	const [audioRegions, setAudioRegions] = useState<AudioRegion[]>([]);
 	const [selectedAudioId, setSelectedAudioId] = useState<string | null>(null);
 	const [sourceAudioRefreshKey, setSourceAudioRefreshKey] = useState(0);
+	const [sessionSourceAudioFallbackPaths, setSessionSourceAudioFallbackPaths] = useState<
+		string[]
+	>([]);
+	const [
+		sessionSourceAudioFallbackStartDelayMsByPath,
+		setSessionSourceAudioFallbackStartDelayMsByPath,
+	] = useState<Record<string, number>>({});
 	const [sourceAudioTrackSettingsByClip, setSourceAudioTrackSettingsByClip] = useState<
 		Record<string, SourceAudioTrackSettings>
 	>({});
@@ -2428,6 +2435,8 @@ export default function VideoEditor() {
 						currentProjectResult.path ?? null,
 					);
 					if (restored) {
+						setSessionSourceAudioFallbackPaths([]);
+						setSessionSourceAudioFallbackStartDelayMsByPath({});
 						// Re-apply user preferences so stale project data does not
 						// overwrite the last-used padding, aspect ratio, export
 						// settings, etc. that were saved to localStorage.
@@ -2463,6 +2472,12 @@ export default function VideoEditor() {
 						? sourceVideoUrl
 						: null;
 					applySessionPresentation(sessionResult.session);
+					setSessionSourceAudioFallbackPaths(
+						sessionResult.session.sourceAudioFallbackPaths ?? [],
+					);
+					setSessionSourceAudioFallbackStartDelayMsByPath(
+						sessionResult.session.sourceAudioFallbackStartDelayMsByPath ?? {},
+					);
 					setWebcam((prev) => ({
 						...prev,
 						enabled: Boolean(sessionResult.session?.webcamPath),
@@ -2483,6 +2498,8 @@ export default function VideoEditor() {
 					setLastSavedSnapshot(null);
 					pendingFreshRecordingAutoZoomPathRef.current = null;
 					applySessionPresentation(null);
+					setSessionSourceAudioFallbackPaths([]);
+					setSessionSourceAudioFallbackStartDelayMsByPath({});
 					setWebcam((prev) => ({
 						...prev,
 						enabled: false,
@@ -2525,7 +2542,8 @@ export default function VideoEditor() {
 				sessionVideoPath: session?.videoPath,
 				videoSourcePath: videoSourcePath,
 				match: session?.videoPath === videoSourcePath,
-				webcamPath: session?.webcamPath
+				webcamPath: session?.webcamPath,
+				sourceAudioFallbackPaths: session?.sourceAudioFallbackPaths,
 			});
 
 			if (!session || session.videoPath !== videoSourcePath) {
@@ -2540,6 +2558,10 @@ export default function VideoEditor() {
 					? (session.timeOffsetMs ?? prev.timeOffsetMs)
 					: DEFAULT_WEBCAM_TIME_OFFSET_MS,
 			}));
+			setSessionSourceAudioFallbackPaths(session.sourceAudioFallbackPaths ?? []);
+			setSessionSourceAudioFallbackStartDelayMsByPath(
+				session.sourceAudioFallbackStartDelayMsByPath ?? {},
+			);
 			setSourceAudioRefreshKey((key) => key + 1);
 		});
 	}, [videoSourcePath]);
@@ -3384,6 +3406,8 @@ export default function VideoEditor() {
 	const audio = useVideoEditorAudio({
 		currentSourcePath,
 		sourceAudioRefreshKey,
+		sessionSourceAudioFallbackPaths,
+		sessionSourceAudioFallbackStartDelayMsByPath,
 		selectedClipId,
 		clipRegions,
 		audioRegions,
@@ -3414,6 +3438,7 @@ export default function VideoEditor() {
 		if (!video.paused && !video.ended) {
 			playback.pause();
 		} else {
+			audio.primeSourceAudioPlayback();
 			playback.play().catch((err) => console.error("Video play failed:", err));
 		}
 	}
@@ -4148,6 +4173,7 @@ export default function VideoEditor() {
 				const playback = videoPlaybackRef.current;
 				if (playback?.video) {
 					if (playback.video.paused) {
+						audio.primeSourceAudioPlayback();
 						playback.play().catch(console.error);
 					} else {
 						playback.pause();
@@ -4167,6 +4193,7 @@ export default function VideoEditor() {
 		timelineDuration,
 		mp4FrameRate,
 		handleSeek,
+		audio.primeSourceAudioPlayback,
 	]);
 
 	useEffect(() => {
@@ -4702,6 +4729,7 @@ export default function VideoEditor() {
 				}
 
 				if (wasPlaying) {
+					audio.primeSourceAudioPlayback();
 					videoPlaybackRef.current?.play();
 				} else {
 					video.currentTime = restoreTime;
@@ -4740,6 +4768,7 @@ export default function VideoEditor() {
 			videoPath,
 			wallpaper,
 			trimRegions,
+			clipRegions,
 			shadowIntensity,
 			backgroundBlur,
 			zoomMotionBlur,
@@ -4778,6 +4807,7 @@ export default function VideoEditor() {
 			audio.sourceAudioFallbackStartDelayMsByPath,
 			audio.activeSourceAudioTrackSettings,
 			audio.selectedClipSourceAudioTrackSettings,
+			audio.primeSourceAudioPlayback,
 			exportEncodingMode,
 			exportBackendPreference,
 			exportPipelineModel,
@@ -5895,6 +5925,15 @@ export default function VideoEditor() {
 								onSourceAudioTrackNormalizeChange={
 									audio.onSelectedClipSourceAudioTrackNormalizeChange
 								}
+								onSourceAudioTrackReduceNoiseChange={
+									audio.onSelectedClipSourceAudioTrackReduceNoiseChange
+								}
+								onSourceAudioTrackEnhanceVoiceChange={
+									audio.onSelectedClipSourceAudioTrackEnhanceVoiceChange
+								}
+								onSourceAudioTrackEnhanceVoiceIntensityChange={
+									audio.onSelectedClipSourceAudioTrackEnhanceVoiceIntensityChange
+								}
 								selectedAudioId={selectedAudioId}
 									selectedAudioVolume={
 										selectedAudioId
@@ -6493,6 +6532,7 @@ export default function VideoEditor() {
 						selectedAnnotationId={selectedAnnotationId}
 						onSelectAnnotation={handleSelectAnnotation}
 						showSourceAudioTrack={clipRegions.some((c) => c.showSourceAudio)}
+						sourceAudioFallbackPaths={audio.sourceAudioFallbackPaths}
 						sourceAudioTrackSettings={audio.activeSourceAudioTrackSettings}
 						getSourceAudioTrackSettingsForClip={
 							audio.getSourceAudioTrackSettingsForClip

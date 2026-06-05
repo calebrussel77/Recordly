@@ -62,6 +62,58 @@ describe("Audio path handling", () => {
 });
 
 describe("Audio region normalization", () => {
+	describe("source track enhancement settings", () => {
+		it("normalizes new voice enhancement fields while preserving old project defaults", () => {
+			const result = normalizeProjectEditor({
+				defaultSourceAudioTrackSettings: {
+					mic: {
+						volume: 1.5,
+						normalize: true,
+						reduceNoise: true,
+						enhanceVoice: true,
+						enhanceVoiceIntensity: 120,
+					},
+					system: {
+						volume: 0.8,
+						normalize: false,
+					},
+				},
+				sourceAudioTrackSettingsByClip: {
+					"clip-1": {
+						mic: {
+							volume: -0.5,
+							normalize: false,
+							reduceNoise: true,
+							enhanceVoice: true,
+							enhanceVoiceIntensity: Number.NaN,
+						},
+					},
+				},
+			} as any);
+
+			expect(result.defaultSourceAudioTrackSettings.mic).toMatchObject({
+				volume: 1,
+				normalize: true,
+				reduceNoise: true,
+				enhanceVoice: true,
+				enhanceVoiceIntensity: 100,
+			});
+			expect(result.defaultSourceAudioTrackSettings.system).toMatchObject({
+				volume: 0.8,
+				normalize: false,
+				reduceNoise: false,
+				enhanceVoice: false,
+				enhanceVoiceIntensity: 75,
+			});
+			expect(result.sourceAudioTrackSettingsByClip["clip-1"].mic).toMatchObject({
+				volume: 0,
+				reduceNoise: true,
+				enhanceVoice: true,
+				enhanceVoiceIntensity: 75,
+			});
+		});
+	});
+
 	describe("volume is clamped to [0, 1]", () => {
 		it("should clamp volume > 1 down to 1", () => {
 			const result = normalizeProjectEditor({

@@ -46,6 +46,11 @@ import type { AppLocale } from "../../i18n/config";
 import { SUPPORTED_LOCALES } from "../../i18n/config";
 import { AnnotationSettingsPanel } from "./AnnotationSettingsPanel";
 import {
+	DEFAULT_ENHANCE_VOICE_INTENSITY,
+	normalizeSourceAudioTrackSetting,
+	type SourceAudioTrackSetting,
+} from "./audio/audioTypes";
+import {
 	CURSOR_MOTION_PRESETS,
 	type CursorMotionPresetId,
 	getMatchingCursorMotionPresetId,
@@ -500,9 +505,12 @@ interface SettingsPanelProps {
 	onClipMutedChange?: (muted: boolean) => void;
 	onClipShowSourceAudioChange?: (show: boolean) => void;
 	sourceAudioTrackMeta?: Array<{ id: string; label: string }>;
-	sourceAudioTrackSettings?: Record<string, { volume: number; normalize: boolean }>;
+	sourceAudioTrackSettings?: Record<string, SourceAudioTrackSetting>;
 	onSourceAudioTrackVolumeChange?: (id: string, volume: number) => void;
 	onSourceAudioTrackNormalizeChange?: (id: string, normalize: boolean) => void;
+	onSourceAudioTrackReduceNoiseChange?: (id: string, reduceNoise: boolean) => void;
+	onSourceAudioTrackEnhanceVoiceChange?: (id: string, enhanceVoice: boolean) => void;
+	onSourceAudioTrackEnhanceVoiceIntensityChange?: (id: string, intensity: number) => void;
 	onClipDelete?: (id: string) => void;
 	selectedAudioId?: string | null;
 	selectedAudioVolume?: number | null;
@@ -906,6 +914,9 @@ export function SettingsPanel({
 	sourceAudioTrackSettings = {},
 	onSourceAudioTrackVolumeChange,
 	onSourceAudioTrackNormalizeChange,
+	onSourceAudioTrackReduceNoiseChange,
+	onSourceAudioTrackEnhanceVoiceChange,
+	onSourceAudioTrackEnhanceVoiceIntensityChange,
 	onClipDelete,
 	selectedAudioId,
 	selectedAudioVolume,
@@ -3278,10 +3289,14 @@ export function SettingsPanel({
 				{selectedClipId && hasClipSourceAudio && sourceAudioTrackMeta.length > 0 && (
 					<div className="mt-1 flex flex-col gap-3">
 						{sourceAudioTrackMeta.map((track) => {
-							const settings = sourceAudioTrackSettings[track.id] ?? {
-								volume: 1,
-								normalize: false,
-							};
+							const hasMicTrack = sourceAudioTrackMeta.some(
+								(candidate) => candidate.id === "mic",
+							);
+							const showVoiceEnhancementControls =
+								track.id === "mic" || (!hasMicTrack && track.id === "mixed");
+							const settings = normalizeSourceAudioTrackSetting(
+								sourceAudioTrackSettings[track.id],
+							);
 							return (
 								<div
 									key={track.id}
@@ -3299,12 +3314,81 @@ export function SettingsPanel({
 													track.id,
 													false,
 												);
+												onSourceAudioTrackReduceNoiseChange?.(
+													track.id,
+													false,
+												);
+												onSourceAudioTrackEnhanceVoiceChange?.(
+													track.id,
+													false,
+												);
+												onSourceAudioTrackEnhanceVoiceIntensityChange?.(
+													track.id,
+													DEFAULT_ENHANCE_VOICE_INTENSITY,
+												);
 											}}
 											className="text-[10px] text-[#2563EB] transition-opacity hover:opacity-80"
 										>
 											{t("common.actions.reset", "Reset")}
 										</button>
 									</div>
+									{showVoiceEnhancementControls && (
+										<>
+											<div className="mb-2 flex items-center justify-between rounded-lg bg-foreground/[0.03] px-2.5 py-1.5">
+												<span className="text-[10px] text-muted-foreground">
+													{tSettings("audio.reduceNoise", "Reduce noise")}
+												</span>
+												<Switch
+													checked={Boolean(settings.reduceNoise)}
+													onCheckedChange={(v) =>
+														onSourceAudioTrackReduceNoiseChange?.(
+															track.id,
+															v,
+														)
+													}
+													className="data-[state=checked]:bg-[#06b6d4] scale-75"
+												/>
+											</div>
+											<div className="mb-2 flex items-center justify-between rounded-lg bg-foreground/[0.03] px-2.5 py-1.5">
+												<span className="text-[10px] text-muted-foreground">
+													{tSettings("audio.enhanceVoice", "Enhance voice")}
+												</span>
+												<Switch
+													checked={Boolean(settings.enhanceVoice)}
+													onCheckedChange={(v) =>
+														onSourceAudioTrackEnhanceVoiceChange?.(
+															track.id,
+															v,
+														)
+													}
+													className="data-[state=checked]:bg-[#06b6d4] scale-75"
+												/>
+											</div>
+											{settings.enhanceVoice && (
+												<div className="mb-2 rounded-lg bg-foreground/[0.03] px-2.5 py-2">
+													<SliderControl
+														label={tSettings("audio.intensity", "Intensity")}
+														value={
+															settings.enhanceVoiceIntensity ??
+															DEFAULT_ENHANCE_VOICE_INTENSITY
+														}
+														defaultValue={DEFAULT_ENHANCE_VOICE_INTENSITY}
+														min={0}
+														max={100}
+														step={1}
+														onChange={(v) =>
+															onSourceAudioTrackEnhanceVoiceIntensityChange?.(
+																track.id,
+																v,
+															)
+														}
+														formatValue={(v) => `${Math.round(v)}`}
+														parseInput={(text) => Number.parseFloat(text)}
+													/>
+												</div>
+											)}
+										</>
+									)}
 									<div className="mb-2 flex items-center justify-between rounded-lg bg-foreground/[0.03] px-2.5 py-1.5">
 										<span className="text-[10px] text-muted-foreground">
 											{tSettings("audio.normalize", "Normalize")}

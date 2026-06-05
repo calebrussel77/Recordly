@@ -1,14 +1,11 @@
 import React, { useMemo } from "react";
-import { resolveSourceTrackRoutingPolicy } from "@/lib/exporter/sourceTrackRoutingPolicy";
-import type {
-	AudioRegion,
-	ClipRegion,
-	SpeedRegion,
-} from "../types";
 import type { SourceAudioTrackSettings } from "@/components/video-editor/audio/audioTypes";
+import { resolveSourceTrackRoutingPolicy } from "@/lib/exporter/sourceTrackRoutingPolicy";
+import type { AudioRegion, ClipRegion, SpeedRegion } from "../types";
 import { getActiveClipIdAtSourceTime, isClipMutedById } from "./clipAudio";
 import { useAudioPreviewSync } from "./useAudioPreviewSync";
 import { useClipAudioSettingsController } from "./useClipAudioSettingsController";
+import { useEnhancedSourceAudioFallbacks } from "./useEnhancedSourceAudioFallbacks";
 import { useSourceAudioFallback } from "./useSourceAudioFallback";
 
 function extractLocalPathFromMediaServerUrl(input: string | null | undefined): string | null {
@@ -29,6 +26,8 @@ function extractLocalPathFromMediaServerUrl(input: string | null | undefined): s
 interface UseVideoEditorAudioParams {
 	currentSourcePath: string | null;
 	sourceAudioRefreshKey?: number;
+	sessionSourceAudioFallbackPaths?: string[];
+	sessionSourceAudioFallbackStartDelayMsByPath?: Record<string, number>;
 	selectedClipId: string | null;
 	clipRegions: ClipRegion[];
 	audioRegions: AudioRegion[];
@@ -53,6 +52,8 @@ interface UseVideoEditorAudioParams {
 export function useVideoEditorAudio({
 	currentSourcePath,
 	sourceAudioRefreshKey = 0,
+	sessionSourceAudioFallbackPaths = [],
+	sessionSourceAudioFallbackStartDelayMsByPath = {},
 	selectedClipId,
 	clipRegions,
 	audioRegions,
@@ -78,15 +79,10 @@ export function useVideoEditorAudio({
 		useSourceAudioFallback({
 			currentSourcePath: fallbackLookupSourcePath,
 			refreshKey: sourceAudioRefreshKey,
+			sessionFallbackPaths: sessionSourceAudioFallbackPaths,
+			sessionFallbackStartDelayMsByPath: sessionSourceAudioFallbackStartDelayMsByPath,
 			summarizeErrorMessage,
 		});
-
-	const sourceTrackRoutingPolicy = useMemo(
-		() => resolveSourceTrackRoutingPolicy(currentSourcePath, sourceAudioFallbackPaths),
-		[currentSourcePath, sourceAudioFallbackPaths],
-	);
-	const previewSourceAudioFallbackPaths = sourceTrackRoutingPolicy.playbackPaths;
-	const shouldMutePreviewVideo = sourceTrackRoutingPolicy.muteEmbeddedPreview;
 
 	const activeClipIdAtCurrentTime = useMemo(
 		() => getActiveClipIdAtSourceTime(currentTime, clipRegions),
@@ -105,6 +101,9 @@ export function useVideoEditorAudio({
 		onSourceAudioTracksMetaChange,
 		onSelectedClipSourceAudioTrackVolumeChange,
 		onSelectedClipSourceAudioTrackNormalizeChange,
+		onSelectedClipSourceAudioTrackReduceNoiseChange,
+		onSelectedClipSourceAudioTrackEnhanceVoiceChange,
+		onSelectedClipSourceAudioTrackEnhanceVoiceIntensityChange,
 		embeddedSourcePreviewGain,
 		getSourceTrackPreviewGain,
 	} = useClipAudioSettingsController({
@@ -116,7 +115,24 @@ export function useVideoEditorAudio({
 		setDefaultSourceAudioTrackSettings,
 	});
 
-	useAudioPreviewSync({
+	const {
+		sourceAudioFallbackPaths: enhancedSourceAudioFallbackPaths,
+		sourceAudioFallbackStartDelayMsByPath: enhancedSourceAudioFallbackStartDelayMsByPath,
+	} = useEnhancedSourceAudioFallbacks({
+		sourceAudioFallbackPaths,
+		sourceAudioFallbackStartDelayMsByPath,
+		sourceAudioTrackSettings: activeSourceAudioTrackSettings,
+		isPlaying,
+	});
+
+	const sourceTrackRoutingPolicy = useMemo(
+		() => resolveSourceTrackRoutingPolicy(currentSourcePath, enhancedSourceAudioFallbackPaths),
+		[currentSourcePath, enhancedSourceAudioFallbackPaths],
+	);
+	const previewSourceAudioFallbackPaths = sourceTrackRoutingPolicy.playbackPaths;
+	const shouldMutePreviewVideo = sourceTrackRoutingPolicy.muteEmbeddedPreview;
+
+	const { hasPlayableSourceAudio, primeSourceAudioPlayback } = useAudioPreviewSync({
 		audioRegions,
 		previewVolume,
 		isPlaying,
@@ -125,7 +141,7 @@ export function useVideoEditorAudio({
 		duration,
 		effectiveSpeedRegions,
 		previewSourceAudioFallbackPaths,
-		sourceAudioFallbackStartDelayMsByPath,
+		sourceAudioFallbackStartDelayMsByPath: enhancedSourceAudioFallbackStartDelayMsByPath,
 		isCurrentClipMuted,
 		getSourceTrackPreviewGain,
 		onSourceFallbackLoadError,
@@ -135,7 +151,7 @@ export function useVideoEditorAudio({
 		sourceAudioFallbackPaths,
 		sourceAudioFallbackStartDelayMsByPath,
 		previewSourceAudioFallbackPaths,
-		shouldMutePreviewVideo,
+		shouldMutePreviewVideo: shouldMutePreviewVideo && hasPlayableSourceAudio,
 		activeClipIdAtCurrentTime,
 		isCurrentClipMuted,
 		sourceAudioTrackMeta,
@@ -145,7 +161,11 @@ export function useVideoEditorAudio({
 		onSourceAudioTracksMetaChange,
 		onSelectedClipSourceAudioTrackVolumeChange,
 		onSelectedClipSourceAudioTrackNormalizeChange,
+		onSelectedClipSourceAudioTrackReduceNoiseChange,
+		onSelectedClipSourceAudioTrackEnhanceVoiceChange,
+		onSelectedClipSourceAudioTrackEnhanceVoiceIntensityChange,
 		embeddedSourcePreviewGain,
 		getSourceTrackPreviewGain,
+		primeSourceAudioPlayback,
 	};
 }
