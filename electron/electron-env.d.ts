@@ -296,6 +296,7 @@ interface Window {
 			videoPath: string,
 			options?: {
 				startDelayMs?: number;
+				expectedDurationMs?: number;
 				browserMicrophoneProfile?: string;
 				requestedBrowserMicrophoneProfile?: string | null;
 				requestedConstraints?: unknown;
@@ -683,6 +684,8 @@ interface Window {
 				webcamPath?: string | null;
 				timeOffsetMs?: number;
 				hideOverlayCursorByDefault?: boolean;
+				sourceAudioFallbackPaths?: string[];
+				sourceAudioFallbackStartDelayMsByPath?: Record<string, number>;
 			},
 			options?: { preserveProjectPath?: boolean },
 		) => Promise<{ success: boolean }>;
@@ -693,6 +696,8 @@ interface Window {
 				webcamPath?: string | null;
 				timeOffsetMs?: number;
 				hideOverlayCursorByDefault?: boolean;
+				sourceAudioFallbackPaths?: string[];
+				sourceAudioFallbackStartDelayMsByPath?: Record<string, number>;
 			};
 		}>;
 		getCurrentVideoPath: () => Promise<{ success: boolean; path?: string }>;

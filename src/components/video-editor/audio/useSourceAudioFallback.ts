@@ -9,6 +9,8 @@ const SOURCE_AUDIO_FALLBACK_MAX_RECORDING_EMPTY_RETRIES = 240;
 interface UseSourceAudioFallbackParams {
 	currentSourcePath: string | null;
 	refreshKey?: number;
+	sessionFallbackPaths?: string[];
+	sessionFallbackStartDelayMsByPath?: Record<string, number>;
 	summarizeErrorMessage: (message: string) => string;
 }
 
@@ -23,16 +25,28 @@ function isLikelyRecordlyRecording(sourcePath: string) {
 export function useSourceAudioFallback({
 	currentSourcePath,
 	refreshKey = 0,
+	sessionFallbackPaths = [],
+	sessionFallbackStartDelayMsByPath = {},
 	summarizeErrorMessage,
 }: UseSourceAudioFallbackParams) {
 	const [sourceAudioFallbackPaths, setSourceAudioFallbackPaths] = useState<string[]>([]);
 	const [sourceAudioFallbackStartDelayMsByPath, setSourceAudioFallbackStartDelayMsByPath] =
 		useState<Record<string, number>>({});
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey intentionally forces a rescan when recording assets arrive.
 	useEffect(() => {
 		let cancelled = false;
 		setSourceAudioFallbackPaths([]);
 		setSourceAudioFallbackStartDelayMsByPath({});
+
+		if (sessionFallbackPaths.length > 0) {
+			setSourceAudioFallbackPaths(sessionFallbackPaths);
+			setSourceAudioFallbackStartDelayMsByPath(sessionFallbackStartDelayMsByPath);
+			toast.dismiss(SOURCE_AUDIO_FALLBACK_TOAST_ID);
+			return () => {
+				cancelled = true;
+			};
+		}
 
 		if (!currentSourcePath) {
 			return () => {
@@ -94,7 +108,13 @@ export function useSourceAudioFallback({
 		return () => {
 			cancelled = true;
 		};
-	}, [currentSourcePath, refreshKey, summarizeErrorMessage]);
+	}, [
+		currentSourcePath,
+		refreshKey,
+		sessionFallbackPaths,
+		sessionFallbackStartDelayMsByPath,
+		summarizeErrorMessage,
+	]);
 
 	return { sourceAudioFallbackPaths, sourceAudioFallbackStartDelayMsByPath };
 }

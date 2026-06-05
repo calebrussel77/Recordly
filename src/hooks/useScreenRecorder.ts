@@ -104,6 +104,7 @@ type MicrophoneFallbackRecorderMetadata = {
 };
 type MicrophoneSidecarOptions = {
 	startDelayMs?: number;
+	expectedDurationMs?: number;
 	browserMicrophoneProfile?: BrowserMicrophoneProfile;
 	requestedBrowserMicrophoneProfile?: string | null;
 	requestedConstraints?: MediaStreamConstraints;
@@ -520,6 +521,15 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		return Math.round(BITRATE_BASE * highFrameRateBoost);
 	};
 
+	const stopWebcamCaptureStream = useCallback(() => {
+		if (!webcamStream.current) {
+			return;
+		}
+
+		webcamStream.current.getTracks().forEach((track) => track.stop());
+		webcamStream.current = null;
+	}, []);
+
 	const cleanupCapturedMedia = useCallback(() => {
 		if (stream.current) {
 			stream.current.getTracks().forEach((track) => track.stop());
@@ -536,10 +546,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			microphoneStream.current = null;
 		}
 
-		if (webcamStream.current) {
-			webcamStream.current.getTracks().forEach((track) => track.stop());
-			webcamStream.current = null;
-		}
+		stopWebcamCaptureStream();
 
 		if (mixingContext.current) {
 			mixingContext.current.close().catch(() => undefined);
@@ -563,7 +570,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			micFallbackRecorderMetadata.current = null;
 			resetMicFallbackTimingDiagnostics();
 		}
-	}, [resetMicFallbackTimingDiagnostics]);
+	}, [resetMicFallbackTimingDiagnostics, stopWebcamCaptureStream]);
 
 	const appendMicFallbackChunk = useCallback(
 		(event: BlobEvent) => {
@@ -875,6 +882,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			micFallbackBlobPromise: Promise<Blob | null> | null | undefined,
 			finalPath: string,
 			startDelayMs?: number | null,
+			expectedDurationMs?: number | null,
 			mediaTrackSettings?: MicrophoneTrackSettingsSnapshot | null,
 		) => {
 			const micFallbackBlob = await micFallbackBlobPromise;
@@ -885,7 +893,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				micFallbackAudioInputDevices.current = null;
 				micFallbackRecorderMetadata.current = null;
 				resetMicFallbackTimingDiagnostics();
-				return;
+				return null;
 			}
 
 			try {
@@ -896,6 +904,9 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				const sidecarOptions: MicrophoneSidecarOptions = {
 					...(Number.isFinite(effectiveStartDelayMs) && (effectiveStartDelayMs ?? 0) >= 0
 						? { startDelayMs: effectiveStartDelayMs ?? 0 }
+						: {}),
+					...(Number.isFinite(expectedDurationMs) && (expectedDurationMs ?? 0) > 0
+						? { expectedDurationMs: expectedDurationMs ?? 0 }
 						: {}),
 					browserMicrophoneProfile: browserMicrophoneProfile.current,
 					...(requestedBrowserMicrophoneProfile.current
@@ -940,13 +951,16 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 						`${errorMessage}. Recording was saved without the fallback microphone track.`,
 						{ id: MICROPHONE_SIDECAR_ERROR_TOAST_ID, duration: 10000 },
 					);
+					return null;
 				}
+				return result.path ?? null;
 			} catch (error) {
 				console.warn("Failed to store microphone sidecar:", error);
 				toast.error(
 					`${getErrorMessage(error)}. Recording was saved without the fallback microphone track.`,
 					{ id: MICROPHONE_SIDECAR_ERROR_TOAST_ID, duration: 10000 },
 				);
+				return null;
 			} finally {
 				micFallbackStartDelayMs.current = null;
 				micFallbackTrackSettings.current = null;
@@ -964,6 +978,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		const pending = webcamStopPromise.current;
 
 		if (!recorder) {
+			stopWebcamCaptureStream();
 			const result = pending ? await pending : resolvedWebcamPath.current;
 			webcamStopPromise.current = null;
 			pendingWebcamPathPromise.current = null;
@@ -972,10 +987,17 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		}
 
 		if (recorder.state !== "inactive") {
-			recorder.stop();
+			try {
+				recorder.stop();
+			} finally {
+				stopWebcamCaptureStream();
+			}
 		} else if (pending && webcamStopResolver.current) {
+			stopWebcamCaptureStream();
 			webcamStopResolver.current(resolvedWebcamPath.current);
 			webcamStopResolver.current = null;
+		} else {
+			stopWebcamCaptureStream();
 		}
 
 		const result = pending ? await pending : resolvedWebcamPath.current;
@@ -983,7 +1005,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		pendingWebcamPathPromise.current = null;
 		resolvedWebcamPath.current = result ?? null;
 		return result ?? null;
-	}, []);
+	}, [stopWebcamCaptureStream]);
 
 	const recoverNativeRecordingSession = useCallback(
 		async (
@@ -1026,6 +1048,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 	 */
 	const prepareWebcamRecorder = useCallback(async () => {
 		if (!webcamEnabled) {
+			stopWebcamCaptureStream();
 			resolvedWebcamPath.current = null;
 			pendingWebcamPathPromise.current = Promise.resolve(null);
 			webcamStartTime.current = null;
@@ -1034,6 +1057,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		}
 
 		try {
+			stopWebcamCaptureStream();
 			webcamStream.current = await navigator.mediaDevices.getUserMedia({
 				video: webcamDeviceId
 					? {
@@ -1070,6 +1094,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				}
 			};
 			recorder.onerror = () => {
+				stopWebcamCaptureStream();
 				webcamStopResolver.current?.(null);
 				webcamStopResolver.current = null;
 			};
@@ -1109,10 +1134,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 					webcamStopResolver.current = null;
 					webcamRecorder.current = null;
 					webcamStartTime.current = null;
-					if (webcamStream.current) {
-						webcamStream.current.getTracks().forEach((track) => track.stop());
-						webcamStream.current = null;
-					}
+					stopWebcamCaptureStream();
 				}
 			};
 		} catch (error) {
@@ -1126,12 +1148,15 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			webcamRecorder.current = null;
 			webcamStartTime.current = null;
 			webcamTimeOffsetMs.current = 0;
-			if (webcamStream.current) {
-				webcamStream.current.getTracks().forEach((track) => track.stop());
-				webcamStream.current = null;
-			}
+			stopWebcamCaptureStream();
 		}
-	}, [getRecordingDurationMs, selectWebcamMimeType, webcamDeviceId, webcamEnabled]);
+	}, [
+		getRecordingDurationMs,
+		selectWebcamMimeType,
+		stopWebcamCaptureStream,
+		webcamDeviceId,
+		webcamEnabled,
+	]);
 
 	/** Start the prepared webcam MediaRecorder. Call after main recording begins. */
 	const beginWebcamCapture = useCallback(() => {
@@ -1221,12 +1246,22 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 						);
 
 						// Store sidecars
-						await storeMicrophoneSidecar(
+						const microphoneSidecarPath = await storeMicrophoneSidecar(
 							micFallbackBlobPromise,
 							finalPath,
 							fallbackStartDelayMs,
+							expectedDurationMs,
 							fallbackTrackSettings,
 						);
+						const sourceAudioFallbackPaths = microphoneSidecarPath
+							? [microphoneSidecarPath]
+							: [];
+						const sourceAudioFallbackStartDelayMsByPath =
+							microphoneSidecarPath &&
+							Number.isFinite(fallbackStartDelayMs) &&
+							(fallbackStartDelayMs ?? 0) >= 0
+								? { [microphoneSidecarPath]: fallbackStartDelayMs ?? 0 }
+								: {};
 
 						// Perform muxing/renaming if on Windows
 						if (isNativeWindows) {
@@ -1245,6 +1280,8 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 							webcamPath,
 							timeOffsetMs: webcamTimeOffsetMs.current,
 							hideOverlayCursorByDefault: hideEditorOverlayCursorByDefault.current,
+							sourceAudioFallbackPaths,
+							sourceAudioFallbackStartDelayMsByPath,
 						});
 
 						console.log(
@@ -1634,7 +1671,10 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				try {
 					const hideCursorResult = await window.electronAPI.hideOsCursor?.();
 					if (hideCursorResult && !hideCursorResult.success) {
-						console.warn("Could not hide OS cursor before recording.", hideCursorResult);
+						console.warn(
+							"Could not hide OS cursor before recording.",
+							hideCursorResult,
+						);
 					}
 				} catch {
 					console.warn("Could not hide OS cursor before recording.");
@@ -2060,8 +2100,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		webcamRecorder.current = null;
 		webcamStartTime.current = null;
 		webcamTimeOffsetMs.current = 0;
-		webcamStream.current?.getTracks().forEach((t) => t.stop());
-		webcamStream.current = null;
+		stopWebcamCaptureStream();
 		pendingWebcamPathPromise.current = null;
 		resolvedWebcamPath.current = null;
 
@@ -2092,7 +2131,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			setRecording(false);
 			window.electronAPI?.setRecordingState(false);
 		}
-	}, [cleanupCapturedMedia, markRecordingResumed, recording]);
+	}, [cleanupCapturedMedia, markRecordingResumed, recording, stopWebcamCaptureStream]);
 
 	const toggleRecording = async () => {
 		if (starting || countdownActive || finalizing) {

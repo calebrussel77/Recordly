@@ -51,6 +51,29 @@ function normalizeBoolean(value: unknown, fallback = false): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
+function normalizeSourceAudioFallbackStartDelayMsByPath(
+  sourceAudioFallbackPaths: string[],
+  startDelayMsByPath?: Record<string, number>,
+): Record<string, number> {
+  if (!startDelayMsByPath) {
+    return {};
+  }
+
+  const normalizedStartDelayMsByPath: Record<string, number> = {};
+  for (const audioPath of sourceAudioFallbackPaths) {
+    const directDelayMs = startDelayMsByPath[audioPath];
+    const fallbackDelayMs = Object.entries(startDelayMsByPath).find(
+      ([candidatePath]) => normalizeVideoSourcePath(candidatePath) === audioPath,
+    )?.[1];
+    const delayMs = directDelayMs ?? fallbackDelayMs;
+    if (typeof delayMs === "number" && Number.isFinite(delayMs) && delayMs >= 0) {
+      normalizedStartDelayMsByPath[audioPath] = Math.round(delayMs);
+    }
+  }
+
+  return normalizedStartDelayMsByPath;
+}
+
 /**
  * Produces a filesystem-safe project base name without the project extension.
  */
@@ -573,17 +596,32 @@ export function registerProjectHandlers() {
     return { success: true, webcamPath: nextSession.webcamPath ?? null }
   })
 
-  ipcMain.handle('set-current-recording-session', async (_, session: { videoPath: string; webcamPath?: string | null; timeOffsetMs?: number; hideOverlayCursorByDefault?: boolean }, options?: { preserveProjectPath?: boolean }) => {
+  ipcMain.handle('set-current-recording-session', async (_, session: { videoPath: string; webcamPath?: string | null; timeOffsetMs?: number; hideOverlayCursorByDefault?: boolean; sourceAudioFallbackPaths?: string[]; sourceAudioFallbackStartDelayMsByPath?: Record<string, number> }, options?: { preserveProjectPath?: boolean }) => {
     const normalizedVideoPath = normalizeVideoSourcePath(session.videoPath) ?? session.videoPath
+    const sourceAudioFallbackPaths = Array.isArray(session.sourceAudioFallbackPaths)
+      ? session.sourceAudioFallbackPaths
+          .map((audioPath) => normalizeVideoSourcePath(audioPath))
+          .filter((audioPath): audioPath is string => Boolean(audioPath))
+      : []
+    const sourceAudioFallbackStartDelayMsByPath =
+      normalizeSourceAudioFallbackStartDelayMsByPath(
+        sourceAudioFallbackPaths,
+        session.sourceAudioFallbackStartDelayMsByPath,
+      )
     setCurrentVideoPath(normalizedVideoPath)
     setCurrentRecordingSession({
       videoPath: normalizedVideoPath,
       webcamPath: normalizeVideoSourcePath(session.webcamPath ?? null),
       timeOffsetMs: normalizeRecordingTimeOffsetMs(session.timeOffsetMs),
       hideOverlayCursorByDefault: normalizeBoolean(session.hideOverlayCursorByDefault),
+      sourceAudioFallbackPaths,
+      sourceAudioFallbackStartDelayMsByPath,
     });
     await rememberApprovedLocalReadPath(currentRecordingSession!.videoPath)
     await rememberApprovedLocalReadPath(currentRecordingSession!.webcamPath)
+    await Promise.all(
+      sourceAudioFallbackPaths.map((audioPath) => rememberApprovedLocalReadPath(audioPath)),
+    )
     if (!options?.preserveProjectPath) {
       setCurrentProjectPath(null)
     }

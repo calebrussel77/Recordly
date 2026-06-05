@@ -534,6 +534,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		videoPath: string,
 		options?: {
 			startDelayMs?: number;
+			expectedDurationMs?: number;
 			browserMicrophoneProfile?: string;
 			requestedBrowserMicrophoneProfile?: string | null;
 			requestedConstraints?: unknown;
@@ -697,14 +698,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
 			webcamPath?: string | null;
 			timeOffsetMs?: number;
 			hideOverlayCursorByDefault?: boolean;
+			sourceAudioFallbackPaths?: string[];
+			sourceAudioFallbackStartDelayMsByPath?: Record<string, number>;
 		},
 		options?: { preserveProjectPath?: boolean },
 	) => {
 		return ipcRenderer.invoke("set-current-recording-session", session, options);
 	},
 	onRecordingSessionChanged: (callback: (session: RecordingSessionData | null) => void) => {
-		const listener = (_event: Electron.IpcRendererEvent, payload: RecordingSessionData | null) =>
-			callback(payload);
+		const listener = (
+			_event: Electron.IpcRendererEvent,
+			payload: RecordingSessionData | null,
+		) => callback(payload);
 		ipcRenderer.on("recording-session-changed", listener);
 		return () => ipcRenderer.removeListener("recording-session-changed", listener);
 	},
@@ -904,7 +909,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 			success?: boolean;
 			value?: unknown;
 		};
-		return result?.success ? result.value ?? null : null;
+		return result?.success ? (result.value ?? null) : null;
 	},
 	setAppSetting: (key: string, value: unknown) => {
 		const result = ipcRenderer.sendSync("app-settings:set", key, value) as {

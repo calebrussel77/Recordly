@@ -48,6 +48,8 @@ export type RecordingSessionData = {
 	webcamPath?: string | null;
 	timeOffsetMs?: number;
 	hideOverlayCursorByDefault?: boolean;
+	sourceAudioFallbackPaths?: string[];
+	sourceAudioFallbackStartDelayMsByPath?: Record<string, number>;
 };
 
 export type PauseSegment = {
@@ -56,10 +58,12 @@ export type PauseSegment = {
 };
 
 export type RecordingSessionManifest = {
-	version: 1 | 2;
+	version: 1 | 2 | 3;
 	videoFileName: string;
 	webcamFileName?: string | null;
 	timeOffsetMs?: number;
+	sourceAudioFallbackFileNames?: string[];
+	sourceAudioFallbackStartDelayMsByFileName?: Record<string, number>;
 };
 
 export type ProjectLibraryEntry = {
