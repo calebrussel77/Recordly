@@ -1,4 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const audioEnhancementMocks = vi.hoisted(() => ({
+	enhanceSourceAudioPathsForExport: vi.fn(
+		async (input: { paths: string[]; startDelayMsByPath?: Record<string, number> }) => ({
+			paths: input.paths,
+			startDelayMsByPath: input.startDelayMsByPath ?? {},
+		}),
+	),
+}));
+
+vi.mock("@/components/video-editor/audio/audioEnhancementClient", () => ({
+	enhanceSourceAudioPathsForExport: audioEnhancementMocks.enhanceSourceAudioPathsForExport,
+}));
 
 import { AudioProcessor } from "./audioEncoder";
 
@@ -27,6 +40,16 @@ type OfflineRenderTestHarness = AudioProcessor & {
 		muxer: unknown,
 	): Promise<void>;
 };
+
+beforeEach(() => {
+	audioEnhancementMocks.enhanceSourceAudioPathsForExport.mockClear();
+	audioEnhancementMocks.enhanceSourceAudioPathsForExport.mockImplementation(
+		async (input: { paths: string[]; startDelayMsByPath?: Record<string, number> }) => ({
+			paths: input.paths,
+			startDelayMsByPath: input.startDelayMsByPath ?? {},
+		}),
+	);
+});
 
 describe("AudioProcessor offline render preparation", () => {
 	it("keeps embedded source audio separate from external companion sidecars", async () => {
@@ -133,5 +156,56 @@ describe("AudioProcessor offline render preparation", () => {
 
 		expect(loadAudioFileDemuxer).not.toHaveBeenCalled();
 		expect(renderAndMuxOfflineAudio).toHaveBeenCalled();
+	});
+
+	it("uses enhanced source audio paths before offline export rendering", async () => {
+		const processor = new AudioProcessor() as unknown as OfflineRenderTestHarness;
+		const renderAndMuxOfflineAudio = vi
+			.spyOn(processor, "renderAndMuxOfflineAudio")
+			.mockResolvedValue();
+		audioEnhancementMocks.enhanceSourceAudioPathsForExport.mockResolvedValue({
+			paths: ["/tmp/recording.mic.enhanced.wav"],
+			startDelayMsByPath: { "/tmp/recording.mic.enhanced.wav": 2000 },
+		});
+
+		await processor.process(
+			null,
+			{} as never,
+			"file:///tmp/recording.mp4",
+			[],
+			[],
+			undefined,
+			[],
+			["/tmp/recording.mic.wav"],
+			{ "/tmp/recording.mic.wav": 2000 },
+			{
+				mic: {
+					volume: 1,
+					normalize: false,
+					reduceNoise: true,
+					enhanceVoice: true,
+					enhanceVoiceIntensity: 75,
+				},
+			},
+		);
+
+		expect(audioEnhancementMocks.enhanceSourceAudioPathsForExport).toHaveBeenCalledWith({
+			paths: ["/tmp/recording.mic.wav"],
+			startDelayMsByPath: { "/tmp/recording.mic.wav": 2000 },
+			sourceAudioTrackSettings: expect.objectContaining({
+				mic: expect.objectContaining({ reduceNoise: true }),
+			}),
+		});
+		expect(renderAndMuxOfflineAudio).toHaveBeenCalledWith(
+			"file:///tmp/recording.mp4",
+			[],
+			[],
+			[],
+			["/tmp/recording.mic.enhanced.wav"],
+			{ "/tmp/recording.mic.enhanced.wav": 2000 },
+			expect.any(Object),
+			undefined,
+			expect.any(Object),
+		);
 	});
 });

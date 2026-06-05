@@ -10,11 +10,16 @@ import {
 	buildResolvedAudioPlan,
 	SourceTrackId,
 } from "@/lib/exporter/audioRoutingEngine";
+import {
+	isSourceAudioEnhancementEnabled,
+	normalizeSourceAudioTrackSetting,
+	SOURCE_AUDIO_NORMALIZE_GAIN,
+} from "@/components/video-editor/audio/audioTypes";
+import { enhanceSourceAudioPathsForExport } from "@/components/video-editor/audio/audioEnhancementClient";
 import { estimateCompanionAudioStartDelaySeconds } from "@/lib/mediaTiming";
 import { resolveMediaElementSource } from "./localMediaSource";
 import type { VideoMuxer } from "./muxer";
 import { resolveSourceTrackRoutingPolicy } from "./sourceTrackRoutingPolicy";
-import { SOURCE_AUDIO_NORMALIZE_GAIN } from "@/components/video-editor/audio/audioTypes";
 
 const AUDIO_BITRATE = 128_000;
 const DECODE_BACKPRESSURE_LIMIT = 20;
@@ -75,7 +80,9 @@ export function hasNonDefaultSourceTrackSettings(
 	}
 	return Object.values(sourceAudioTrackSettings).some(
 		(settings) =>
-			Math.abs((settings?.volume ?? 1) - 1) > 0.0005 || Boolean(settings?.normalize),
+			Math.abs((settings?.volume ?? 1) - 1) > 0.0005 ||
+			Boolean(settings?.normalize) ||
+			isSourceAudioEnhancementEnabled(normalizeSourceAudioTrackSetting(settings)),
 	);
 }
 
@@ -224,12 +231,17 @@ export class AudioProcessor {
 					(audioPath) => typeof audioPath === "string" && audioPath.trim().length > 0,
 				)
 			: [];
+		const enhancedSourceAudio = await enhanceSourceAudioPathsForExport({
+			paths: sortedSourceAudioFallbackPaths,
+			startDelayMsByPath: sourceAudioFallbackStartDelayMsByPath,
+			sourceAudioTrackSettings,
+		});
 		const routingPolicy = resolveSourceTrackRoutingPolicy(
 			videoUrl,
-			sortedSourceAudioFallbackPaths,
+			enhancedSourceAudio.paths,
 		);
 		const hasTimedCompanionAudio = routingPolicy.playbackPaths.some(
-			(audioPath) => (sourceAudioFallbackStartDelayMsByPath?.[audioPath] ?? 0) > 0,
+			(audioPath) => (enhancedSourceAudio.startDelayMsByPath[audioPath] ?? 0) > 0,
 		);
 		const needsSourceAudioMixing =
 			routingPolicy.playbackPaths.length > 1 ||
@@ -249,8 +261,8 @@ export class AudioProcessor {
 				sortedTrims,
 				sortedSpeedRegions,
 				sortedAudioRegions,
-				sortedSourceAudioFallbackPaths,
-				sourceAudioFallbackStartDelayMsByPath,
+				enhancedSourceAudio.paths,
+				enhancedSourceAudio.startDelayMsByPath,
 				sourceAudioTrackSettings,
 				clipRegions,
 				muxer,
@@ -283,7 +295,7 @@ export class AudioProcessor {
 				[],
 				[],
 				routingPolicy.playbackPaths,
-				sourceAudioFallbackStartDelayMsByPath,
+				enhancedSourceAudio.startDelayMsByPath,
 				sourceAudioTrackSettings,
 				clipRegions,
 				muxer,
@@ -351,14 +363,19 @@ export class AudioProcessor {
 					(audioPath) => typeof audioPath === "string" && audioPath.trim().length > 0,
 				)
 			: [];
+		const enhancedSourceAudio = await enhanceSourceAudioPathsForExport({
+			paths: sortedSourceAudioFallbackPaths,
+			startDelayMsByPath: sourceAudioFallbackStartDelayMsByPath,
+			sourceAudioTrackSettings,
+		});
 
 		const prepared = await this.prepareOfflineRender(
 			videoUrl,
 			sortedTrims,
 			sortedSpeedRegions,
 			sortedAudioRegions,
-			sortedSourceAudioFallbackPaths,
-			sourceAudioFallbackStartDelayMsByPath,
+			enhancedSourceAudio.paths,
+			enhancedSourceAudio.startDelayMsByPath,
 			sourceAudioTrackSettings,
 			clipRegions,
 		);
