@@ -13,11 +13,13 @@ import {
 	windowsCaptureTargetPath,
 	windowsNativeCaptureActive,
 } from "../state";
-import {
-	AudioSyncAdjustment,
-} from "../types";
-import { emitRecordingInterrupted } from "./events";
+import { AudioSyncAdjustment } from "../types";
 import { moveFileWithOverwrite } from "../utils";
+import {
+	MIN_VALID_COMPANION_AUDIO_DURATION_SECONDS,
+	probeMediaDurationSeconds,
+} from "./diagnostics";
+import { emitRecordingInterrupted } from "./events";
 
 export type NativeWindowsVideoPaddingResult = {
 	padded: boolean;
@@ -181,21 +183,35 @@ export async function muxNativeWindowsVideoWithAudio(
 
 	const videoPathWithoutExt = videoPath.replace(/\.[^.]+$/u, "");
 
+	const isUsableAudioSidecar = async (audioPath: string) => {
+		const stat = await fs.stat(audioPath);
+		if (stat.size <= 0) {
+			return null;
+		}
+
+		const durationSeconds = await probeMediaDurationSeconds(audioPath);
+		if (durationSeconds <= MIN_VALID_COMPANION_AUDIO_DURATION_SECONDS) {
+			return null;
+		}
+
+		return { stat, durationSeconds };
+	};
+
 	// Optimization: instead of heavy FFmpeg muxing, we just move the audio sidecars
 	// to their final companion paths so the editor can find them as separate tracks.
 	if (systemAudioPath) {
 		const finalSystemPath = `${videoPathWithoutExt}.system.wav`;
 		try {
-			const stat = await fs.stat(systemAudioPath);
-			if (stat.size > 0) {
+			const audioInfo = await isUsableAudioSidecar(systemAudioPath);
+			if (audioInfo) {
 				if (systemAudioPath !== finalSystemPath) {
 					await moveFileWithOverwrite(systemAudioPath, finalSystemPath);
 				}
 				audioInputs.push("system");
 				audio.system = {
 					path: finalSystemPath,
-					sizeBytes: stat.size,
-					durationSeconds: 0,
+					sizeBytes: audioInfo.stat.size,
+					durationSeconds: audioInfo.durationSeconds,
 					startDelayMs: null,
 					adjustment: { mode: "none", delayMs: 0, tempoRatio: 1, durationDeltaMs: 0 },
 				};
@@ -208,16 +224,16 @@ export async function muxNativeWindowsVideoWithAudio(
 	if (micAudioPath) {
 		const finalMicPath = `${videoPathWithoutExt}.mic.wav`;
 		try {
-			const stat = await fs.stat(micAudioPath);
-			if (stat.size > 0) {
+			const audioInfo = await isUsableAudioSidecar(micAudioPath);
+			if (audioInfo) {
 				if (micAudioPath !== finalMicPath) {
 					await moveFileWithOverwrite(micAudioPath, finalMicPath);
 				}
 				audioInputs.push("mic");
 				audio.mic = {
 					path: finalMicPath,
-					sizeBytes: stat.size,
-					durationSeconds: 0,
+					sizeBytes: audioInfo.stat.size,
+					durationSeconds: audioInfo.durationSeconds,
 					startDelayMs: null,
 					adjustment: { mode: "none", delayMs: 0, tempoRatio: 1, durationDeltaMs: 0 },
 				};
@@ -227,9 +243,7 @@ export async function muxNativeWindowsVideoWithAudio(
 		}
 	}
 
-	console.log(
-		`[PERF:MAIN] muxNativeWindowsVideoWithAudio: COMPLETED in ${Date.now() - start}ms`,
-	);
+	console.log(`[PERF:MAIN] muxNativeWindowsVideoWithAudio: COMPLETED in ${Date.now() - start}ms`);
 
 	return {
 		muxed: false,

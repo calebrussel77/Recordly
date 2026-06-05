@@ -82,10 +82,20 @@ describe("getCompanionAudioFallbackPaths", () => {
 		execFileMock.mockImplementation(
 			(
 				_file: string,
-				_args: string[],
+				args: string[],
 				_options: Record<string, unknown>,
 				callback: ExecFileCallback,
 			) => {
+				const inputPath = args[args.indexOf("-i") + 1];
+				if (inputPath === systemPath || inputPath === micPath) {
+					const error = new Error("ffmpeg audio probe") as Error & {
+						stderr?: string;
+					};
+					error.stderr = "Duration: 00:00:18.00, start: 0.000000";
+					callback(error, "", error.stderr);
+					return;
+				}
+
 				const error = new Error("ffmpeg probe failed") as Error & { stderr?: string };
 				error.stderr = "Stream #0:0: Video: h264";
 				callback(error, "", error.stderr);
@@ -98,6 +108,53 @@ describe("getCompanionAudioFallbackPaths", () => {
 			systemPath,
 			micPath,
 		]);
+	});
+
+	it("ignores empty companion audio while keeping a usable microphone sidecar", async () => {
+		const videoPath = path.join(tempRoot, "recording.mp4");
+		const systemPath = path.join(tempRoot, "recording.system.wav");
+		const micPath = path.join(tempRoot, "recording.mic.wav");
+
+		await Promise.all([
+			fs.writeFile(videoPath, "video"),
+			fs.writeFile(systemPath, Buffer.alloc(44)),
+			fs.writeFile(micPath, "mic"),
+		]);
+
+		execFileMock.mockImplementation(
+			(
+				_file: string,
+				_args: string[],
+				_options: Record<string, unknown>,
+				callback: ExecFileCallback,
+			) => {
+				const inputPath = _args[_args.indexOf("-i") + 1];
+				if (inputPath === systemPath) {
+					const error = new Error("ffmpeg empty audio probe") as Error & {
+						stderr?: string;
+					};
+					error.stderr = "Duration: N/A";
+					callback(error, "", error.stderr);
+					return;
+				}
+				if (inputPath === micPath) {
+					const error = new Error("ffmpeg audio probe") as Error & {
+						stderr?: string;
+					};
+					error.stderr = "Duration: 00:00:17.82, start: 0.000000";
+					callback(error, "", error.stderr);
+					return;
+				}
+
+				const error = new Error("ffmpeg probe failed") as Error & { stderr?: string };
+				error.stderr = "Stream #0:0: Video: h264";
+				callback(error, "", error.stderr);
+			},
+		);
+
+		const { getCompanionAudioFallbackPaths } = await import("./diagnostics");
+
+		await expect(getCompanionAudioFallbackPaths(videoPath)).resolves.toEqual([micPath]);
 	});
 
 	it("keeps the embedded source audio and adds the mic companion when both are present", async () => {
@@ -114,10 +171,20 @@ describe("getCompanionAudioFallbackPaths", () => {
 		execFileMock.mockImplementation(
 			(
 				_file: string,
-				_args: string[],
+				args: string[],
 				_options: Record<string, unknown>,
 				callback: ExecFileCallback,
 			) => {
+				const inputPath = args[args.indexOf("-i") + 1];
+				if (inputPath === systemPath || inputPath === micPath) {
+					const error = new Error("ffmpeg audio probe") as Error & {
+						stderr?: string;
+					};
+					error.stderr = "Duration: 00:00:18.00, start: 0.000000";
+					callback(error, "", error.stderr);
+					return;
+				}
+
 				const error = new Error("ffmpeg probe found embedded audio") as Error & {
 					stderr?: string;
 				};
@@ -147,10 +214,20 @@ describe("getCompanionAudioFallbackPaths", () => {
 		execFileMock.mockImplementation(
 			(
 				_file: string,
-				_args: string[],
+				args: string[],
 				_options: Record<string, unknown>,
 				callback: ExecFileCallback,
 			) => {
+				const inputPath = args[args.indexOf("-i") + 1];
+				if (inputPath === micPath) {
+					const error = new Error("ffmpeg audio probe") as Error & {
+						stderr?: string;
+					};
+					error.stderr = "Duration: 00:00:18.00, start: 0.000000";
+					callback(error, "", error.stderr);
+					return;
+				}
+
 				const error = new Error("ffmpeg probe failed") as Error & { stderr?: string };
 				error.stderr = "Stream #0:0: Video: h264";
 				callback(error, "", error.stderr);

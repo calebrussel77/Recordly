@@ -9,6 +9,7 @@ import { parseJsonWithByteOrderMark } from "../utils";
 
 const execFileAsync = promisify(execFile);
 export const MIN_VALID_RECORDED_VIDEO_BYTES = 1024;
+export const MIN_VALID_COMPANION_AUDIO_DURATION_SECONDS = 0.01;
 export const RECORDING_AUDIO_MUX_MIN_TIMEOUT_MS = 5 * 60 * 1000;
 export const RECORDING_AUDIO_MUX_MAX_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
@@ -201,9 +202,7 @@ export async function probeMediaDurationSeconds(filePath: string): Promise<numbe
 			return duration;
 		}
 	} finally {
-		console.log(
-			`[PERF:MAIN] probeMediaDurationSeconds: COMPLETED in ${Date.now() - start}ms`,
-		);
+		console.log(`[PERF:MAIN] probeMediaDurationSeconds: COMPLETED in ${Date.now() - start}ms`);
 	}
 	return 0;
 }
@@ -292,9 +291,7 @@ export async function probeVideoStreamDuration(
 	} catch {
 		return null;
 	} finally {
-		console.log(
-			`[PERF:MAIN] probeVideoStreamDuration: COMPLETED in ${Date.now() - start}ms`,
-		);
+		console.log(`[PERF:MAIN] probeVideoStreamDuration: COMPLETED in ${Date.now() - start}ms`);
 	}
 }
 
@@ -430,7 +427,9 @@ export async function getUsableCompanionAudioCandidates(
 		for (const companionPath of [systemPath, micPath]) {
 			try {
 				const stat = await fs.stat(companionPath);
-				if (stat.size > 0) {
+				const durationSeconds =
+					stat.size > 0 ? await probeMediaDurationSeconds(companionPath) : 0;
+				if (durationSeconds > MIN_VALID_COMPANION_AUDIO_DURATION_SECONDS) {
 					usablePaths.push(companionPath);
 				}
 			} catch {
@@ -580,7 +579,9 @@ export async function validateRecordedVideo(videoPath: string) {
 		);
 		const stderr = result.stderr;
 		if (!/Stream #.*Video:/i.test(stderr)) {
-			throw new Error(`Recorded output does not contain a readable video stream: ${videoPath}`);
+			throw new Error(
+				`Recorded output does not contain a readable video stream: ${videoPath}`,
+			);
 		}
 
 		const durationSeconds = parseFfmpegDurationSeconds(stderr);
