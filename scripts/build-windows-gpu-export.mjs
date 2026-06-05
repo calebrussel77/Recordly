@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 
+import { findCmake } from "./find-cmake.mjs";
 import {
 	formatNativeHelperManifestWarning,
 	updateNativeHelperManifest,
@@ -32,57 +33,7 @@ if (!existsSync(path.join(sourceDir, "CMakeLists.txt"))) {
 	process.exit(1);
 }
 
-function findCmake() {
-	try {
-		execSync("cmake --version", { stdio: "pipe" });
-		return "cmake";
-	} catch {
-		// Continue probing common Windows install locations.
-	}
-
-	const standaloneCmakePaths = [
-		path.join("C:", "Program Files", "CMake", "bin", "cmake.exe"),
-		path.join("C:", "Program Files (x86)", "CMake", "bin", "cmake.exe"),
-	];
-	for (const cmakePath of standaloneCmakePaths) {
-		if (existsSync(cmakePath)) {
-			return `"${cmakePath}"`;
-		}
-	}
-
-	const vsRoots = [
-		path.join("C:", "Program Files", "Microsoft Visual Studio"),
-		path.join("C:", "Program Files (x86)", "Microsoft Visual Studio"),
-	];
-	const vsEditions = ["Community", "Professional", "Enterprise", "BuildTools"];
-	const vsVersions = ["2022", "2019"];
-	for (const root of vsRoots) {
-		for (const version of vsVersions) {
-			for (const edition of vsEditions) {
-				const cmakePath = path.join(
-					root,
-					version,
-					edition,
-					"Common7",
-					"IDE",
-					"CommonExtensions",
-					"Microsoft",
-					"CMake",
-					"CMake",
-					"bin",
-					"cmake.exe",
-				);
-				if (existsSync(cmakePath)) {
-					return `"${cmakePath}"`;
-				}
-			}
-		}
-	}
-
-	return null;
-}
-
-const cmake = findCmake();
+const cmake = findCmake({ quote: true });
 if (!cmake) {
 	if (existsSync(bundledExePath)) {
 		const verification = verifyNativeHelperManifest({
@@ -93,7 +44,9 @@ if (!cmake) {
 			binaryName: "recordly-gpu-export.exe",
 		});
 		if (!verification.ok) {
-			console.error(formatNativeHelperManifestWarning("build-windows-gpu-export", verification));
+			console.error(
+				formatNativeHelperManifestWarning("build-windows-gpu-export", verification),
+			);
 			process.exit(1);
 		}
 		console.log(`[build-windows-gpu-export] Using bundled helper: ${bundledExePath}`);

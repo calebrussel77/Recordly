@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 
+import { findCmake } from "./find-cmake.mjs";
 import {
 	formatNativeHelperManifestWarning,
 	updateNativeHelperManifest,
@@ -61,63 +62,13 @@ function fallbackToBundledHelperOrExit(reason) {
 	process.exit(1);
 }
 
-function findCmake() {
-	try {
-		execSync("cmake --version", { stdio: "pipe" });
-		return "cmake";
-	} catch {
-		// Continue probing common Windows install locations.
-	}
-
-	const standaloneCmakePaths = [
-		path.join("C:", "Program Files", "CMake", "bin", "cmake.exe"),
-		path.join("C:", "Program Files (x86)", "CMake", "bin", "cmake.exe"),
-	];
-	for (const cmakePath of standaloneCmakePaths) {
-		if (existsSync(cmakePath)) {
-			return `"${cmakePath}"`;
-		}
-	}
-
-	const vsRoots = [
-		path.join("C:", "Program Files", "Microsoft Visual Studio"),
-		path.join("C:", "Program Files (x86)", "Microsoft Visual Studio"),
-	];
-	const vsEditions = ["Preview", "Community", "Professional", "Enterprise", "BuildTools"];
-	const vsVersions = ["2022", "2019"];
-	for (const root of vsRoots) {
-		for (const version of vsVersions) {
-			for (const edition of vsEditions) {
-				const cmakePath = path.join(
-					root,
-					version,
-					edition,
-					"Common7",
-					"IDE",
-					"CommonExtensions",
-					"Microsoft",
-					"CMake",
-					"CMake",
-					"bin",
-					"cmake.exe",
-				);
-				if (existsSync(cmakePath)) {
-					return `"${cmakePath}"`;
-				}
-			}
-		}
-	}
-
-	return null;
-}
-
 if (!existsSync(path.join(videoCodecSdkRoot, "Samples", "NvCodec"))) {
 	fallbackToBundledHelperOrExit(
 		`NVIDIA Video Codec SDK samples not found at ${videoCodecSdkRoot}. Set RECORDLY_NVIDIA_VIDEO_CODEC_SDK_ROOT to build from source.`,
 	);
 }
 
-const cmake = findCmake();
+const cmake = findCmake({ quote: true });
 if (!cmake) {
 	fallbackToBundledHelperOrExit(
 		"CMake not found. Install Visual Studio with C++ CMake tools or standalone CMake.",
