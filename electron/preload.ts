@@ -725,6 +725,19 @@ contextBridge.exposeInMainWorld("electronAPI", {
 			{ success: true; url: string } | { success: false }
 		>;
 	},
+	enhanceSourceAudio: (options: {
+		audioPath: string;
+		settings?: {
+			reduceNoise?: boolean;
+			enhanceVoice?: boolean;
+			enhanceVoiceIntensity?: number;
+		} | null;
+	}) => {
+		return ipcRenderer.invoke("enhance-source-audio", options) as Promise<
+			| { success: true; path: string; diagnostics?: Record<string, unknown> }
+			| { success: false; error: string; diagnostics?: Record<string, unknown> }
+		>;
+	},
 	saveProjectFile: (
 		projectData: unknown,
 		suggestedName?: string,

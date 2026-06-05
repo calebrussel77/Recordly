@@ -1,5 +1,6 @@
 import { BrowserWindow } from "electron";
 import { registerAssetHandlers } from "./register/assets";
+import { registerAudioEnhancementHandlers } from "./register/audioEnhancement";
 import { registerCaptionHandlers } from "./register/captions";
 import { registerExportHandlers } from "./register/export";
 import { registerPermissionHandlers } from "./register/permissions";
@@ -65,6 +66,7 @@ export function registerIpcHandlers(
 	registerRecordingHandlers(onRecordingStateChange);
 	registerPermissionHandlers();
 	registerAssetHandlers();
+	registerAudioEnhancementHandlers();
 	registerExportHandlers();
 	registerCaptionHandlers();
 	registerProjectHandlers();
