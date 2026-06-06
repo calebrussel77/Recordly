@@ -72,22 +72,13 @@ async function loadSavedProjectMediaPaths() {
 			})
 			.map(async (entry) => {
 				const projectPath = path.join(projectsDir, entry.name);
-				let rawProject: {
+				// Fail closed: an unreadable/corrupt project file means we cannot tell
+				// which recordings it protects, so let the parse error propagate and
+				// abort pruning rather than risk deleting referenced media.
+				const rawProject = parseJsonWithByteOrderMark<{
 					videoPath?: unknown;
 					editor?: { webcam?: { sourcePath?: unknown } };
-				};
-				try {
-					rawProject = parseJsonWithByteOrderMark<{
-						videoPath?: unknown;
-						editor?: { webcam?: { sourcePath?: unknown } };
-					}>(await fs.readFile(projectPath, "utf-8"));
-				} catch (error) {
-					console.warn("[prune] Skipping unreadable project while pruning recordings", {
-						projectPath,
-						error,
-					});
-					return;
-				}
+				}>(await fs.readFile(projectPath, "utf-8"));
 				const candidatePaths = [
 					rawProject.videoPath,
 					rawProject.editor?.webcam?.sourcePath,
