@@ -32,12 +32,14 @@ export function useSourceAudioFallback({
 	const [sourceAudioFallbackPaths, setSourceAudioFallbackPaths] = useState<string[]>([]);
 	const [sourceAudioFallbackStartDelayMsByPath, setSourceAudioFallbackStartDelayMsByPath] =
 		useState<Record<string, number>>({});
+	const [sourceAudioFallbackLoading, setSourceAudioFallbackLoading] = useState(false);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey intentionally forces a rescan when recording assets arrive.
 	useEffect(() => {
 		let cancelled = false;
 		setSourceAudioFallbackPaths([]);
 		setSourceAudioFallbackStartDelayMsByPath({});
+		setSourceAudioFallbackLoading(false);
 
 		if (sessionFallbackPaths.length > 0) {
 			setSourceAudioFallbackPaths(sessionFallbackPaths);
@@ -55,9 +57,11 @@ export function useSourceAudioFallback({
 		}
 
 		void (async () => {
-			const maxEmptyRetries = isLikelyRecordlyRecording(currentSourcePath)
+			const shouldWaitForCompanionAudio = isLikelyRecordlyRecording(currentSourcePath);
+			const maxEmptyRetries = shouldWaitForCompanionAudio
 				? SOURCE_AUDIO_FALLBACK_MAX_RECORDING_EMPTY_RETRIES
 				: SOURCE_AUDIO_FALLBACK_MAX_EMPTY_RETRIES;
+			setSourceAudioFallbackLoading(shouldWaitForCompanionAudio);
 
 			for (let attempt = 0; attempt <= maxEmptyRetries; attempt += 1) {
 				try {
@@ -69,6 +73,7 @@ export function useSourceAudioFallback({
 					if (!result.success) {
 						setSourceAudioFallbackPaths([]);
 						setSourceAudioFallbackStartDelayMsByPath({});
+						setSourceAudioFallbackLoading(false);
 						toast.warning(
 							result.error
 								? `Could not load companion audio sources: ${summarizeErrorMessage(result.error)}`
@@ -90,11 +95,13 @@ export function useSourceAudioFallback({
 					toast.dismiss(SOURCE_AUDIO_FALLBACK_TOAST_ID);
 					setSourceAudioFallbackPaths(paths);
 					setSourceAudioFallbackStartDelayMsByPath(result.startDelayMsByPath ?? {});
+					setSourceAudioFallbackLoading(false);
 					return;
 				} catch (error) {
 					if (!cancelled) {
 						setSourceAudioFallbackPaths([]);
 						setSourceAudioFallbackStartDelayMsByPath({});
+						setSourceAudioFallbackLoading(false);
 						toast.warning(
 							`Could not load companion audio sources: ${summarizeErrorMessage(String(error))}`,
 							{ id: SOURCE_AUDIO_FALLBACK_TOAST_ID, duration: 10000 },
@@ -102,6 +109,9 @@ export function useSourceAudioFallback({
 					}
 					return;
 				}
+			}
+			if (!cancelled) {
+				setSourceAudioFallbackLoading(false);
 			}
 		})();
 
@@ -116,5 +126,9 @@ export function useSourceAudioFallback({
 		summarizeErrorMessage,
 	]);
 
-	return { sourceAudioFallbackPaths, sourceAudioFallbackStartDelayMsByPath };
+	return {
+		sourceAudioFallbackPaths,
+		sourceAudioFallbackStartDelayMsByPath,
+		sourceAudioFallbackLoading,
+	};
 }

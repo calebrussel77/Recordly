@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { app, ipcMain } from "electron";
-import { getFfmpegBinaryPath } from "../ffmpeg/binary";
+import { getFfmpegBinaryPath, getFfprobeBinaryPath } from "../ffmpeg/binary";
 import { getPrebundledNativeHelperPath } from "../paths/binaries";
 import { rememberApprovedLocalReadPath } from "../project/manager";
 import { normalizeVideoSourcePath } from "../utils";
@@ -130,6 +130,59 @@ async function runCommand(command: string, args: string[]) {
 		windowsHide: true,
 		maxBuffer: 16 * 1024 * 1024,
 	});
+}
+
+async function runCommandWithOutput(command: string, args: string[]) {
+	const result = await execFileAsync(command, args, {
+		windowsHide: true,
+		maxBuffer: 16 * 1024 * 1024,
+	});
+	if (typeof result === "string") {
+		return { stdout: result, stderr: "" };
+	}
+	return result;
+}
+
+async function probeAudioDurationSeconds(filePath: string): Promise<number | null> {
+	try {
+		const { stdout } = await runCommandWithOutput(getFfprobeBinaryPath(), [
+			"-v",
+			"error",
+			"-show_entries",
+			"format=duration",
+			"-of",
+			"default=noprint_wrappers=1:nokey=1",
+			filePath,
+		]);
+		const duration = Number.parseFloat(String(stdout).trim());
+		return Number.isFinite(duration) && duration > 0 ? duration : null;
+	} catch {
+		return null;
+	}
+}
+
+function getDurationMismatchToleranceSeconds(sourceDurationSeconds: number) {
+	return Math.min(2, Math.max(0.35, sourceDurationSeconds * 0.005));
+}
+
+export function isEnhancedDurationAcceptable(input: {
+	sourceDurationSeconds?: number | null;
+	outputDurationSeconds?: number | null;
+}) {
+	const sourceDurationSeconds = input.sourceDurationSeconds;
+	const outputDurationSeconds = input.outputDurationSeconds;
+	if (!Number.isFinite(outputDurationSeconds) || (outputDurationSeconds ?? 0) <= 0) {
+		return false;
+	}
+
+	if (!Number.isFinite(sourceDurationSeconds) || (sourceDurationSeconds ?? 0) <= 0) {
+		return true;
+	}
+
+	const missingDurationSeconds = (sourceDurationSeconds ?? 0) - (outputDurationSeconds ?? 0);
+	return (
+		missingDurationSeconds <= getDurationMismatchToleranceSeconds(sourceDurationSeconds ?? 0)
+	);
 }
 
 async function convertToWav48kMono(inputPath: string, outputPath: string) {
@@ -303,6 +356,7 @@ export async function enhanceSourceAudio(
 			error: error instanceof Error ? error.message : "Source audio not found",
 		};
 	}
+	const sourceDurationSeconds = await probeAudioDurationSeconds(audioPath);
 
 	const cacheDir = getAudioEnhancementCacheDir();
 	await fs.mkdir(cacheDir, { recursive: true });
@@ -314,12 +368,26 @@ export async function enhanceSourceAudio(
 	});
 	const cachedPath = path.join(cacheDir, `${safeBaseName(audioPath)}.${cacheKey}.enhanced.wav`);
 	if (await fileExistsWithAudioData(cachedPath)) {
-		await rememberApprovedLocalReadPath(cachedPath);
-		return {
-			success: true,
-			path: cachedPath,
-			diagnostics: { cacheHit: true, engineVersion: AUDIO_ENHANCEMENT_ENGINE_VERSION },
-		};
+		const cachedDurationSeconds = await probeAudioDurationSeconds(cachedPath);
+		if (
+			isEnhancedDurationAcceptable({
+				sourceDurationSeconds,
+				outputDurationSeconds: cachedDurationSeconds,
+			})
+		) {
+			await rememberApprovedLocalReadPath(cachedPath);
+			return {
+				success: true,
+				path: cachedPath,
+				diagnostics: {
+					cacheHit: true,
+					engineVersion: AUDIO_ENHANCEMENT_ENGINE_VERSION,
+					sourceDurationSeconds,
+					outputDurationSeconds: cachedDurationSeconds,
+				},
+			};
+		}
+		await fs.rm(cachedPath, { force: true });
 	}
 
 	const workDir = await fs.mkdtemp(path.join(cacheDir, `${cacheKey}-`));
@@ -334,6 +402,7 @@ export async function enhanceSourceAudio(
 		reduceNoiseApplied: settings.reduceNoise,
 		enhanceVoiceApplied: settings.enhanceVoice,
 		enhanceVoiceIntensity: settings.enhanceVoiceIntensity,
+		sourceDurationSeconds,
 	};
 
 	try {
@@ -368,6 +437,19 @@ export async function enhanceSourceAudio(
 		if (settings.enhanceVoice) {
 			await runEnhanceVoice(currentPath, polishedPath, settings.enhanceVoiceIntensity);
 			currentPath = polishedPath;
+		}
+
+		const outputDurationSeconds = await probeAudioDurationSeconds(currentPath);
+		diagnostics.outputDurationSeconds = outputDurationSeconds;
+		if (
+			!isEnhancedDurationAcceptable({
+				sourceDurationSeconds,
+				outputDurationSeconds,
+			})
+		) {
+			throw new Error(
+				`Enhanced audio duration is invalid (${outputDurationSeconds ?? "unknown"}s for source ${sourceDurationSeconds ?? "unknown"}s)`,
+			);
 		}
 
 		await fs.copyFile(currentPath, tempOutputPath);

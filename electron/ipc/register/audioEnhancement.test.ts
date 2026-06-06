@@ -25,6 +25,7 @@ vi.mock("electron", () => ({
 
 vi.mock("../ffmpeg/binary", () => ({
 	getFfmpegBinaryPath: () => "ffmpeg",
+	getFfprobeBinaryPath: () => "ffprobe",
 }));
 
 vi.mock("../project/manager", () => ({
@@ -36,6 +37,7 @@ import {
 	buildEnhanceVoiceFilter,
 	buildNoiseReductionFilter,
 	enhanceSourceAudio,
+	isEnhancedDurationAcceptable,
 } from "./audioEnhancement";
 
 const tempDirs: string[] = [];
@@ -70,6 +72,11 @@ function mockSuccessfulProcessing() {
 			callback: (error?: Error | null) => void,
 		) => {
 			void (async () => {
+				if (command === "ffprobe") {
+					callback(null, "10.000000\n");
+					return;
+				}
+
 				if (command === process.env.RECORDLY_DEEP_FILTER_PATH) {
 					const outputDir = args[args.indexOf("-o") + 1];
 					await fs.mkdir(outputDir, { recursive: true });
@@ -127,6 +134,21 @@ describe("audio enhancement cache", () => {
 		expect(buildNoiseReductionFilter("fallback")).toContain("agate=threshold=0.018");
 		expect(buildNoiseReductionFilter("residual")).toContain("afftdn=nr=10");
 		expect(buildNoiseReductionFilter("residual")).not.toContain("anlmdn");
+	});
+
+	it("rejects enhanced outputs that are meaningfully shorter than the source", () => {
+		expect(
+			isEnhancedDurationAcceptable({
+				sourceDurationSeconds: 56.223,
+				outputDurationSeconds: 56.193,
+			}),
+		).toBe(true);
+		expect(
+			isEnhancedDurationAcceptable({
+				sourceDurationSeconds: 56.223,
+				outputDurationSeconds: 48,
+			}),
+		).toBe(false);
 	});
 });
 
@@ -191,6 +213,10 @@ describe("enhanceSourceAudio", () => {
 						callback(new Error("deep-filter failed"));
 						return;
 					}
+					if (command === "ffprobe") {
+						callback(null, "10.000000\n");
+						return;
+					}
 					const outputPath = args.at(-1);
 					if (outputPath) {
 						await fs.writeFile(outputPath, Buffer.alloc(128));
@@ -214,5 +240,48 @@ describe("enhanceSourceAudio", () => {
 			expect.any(Object),
 			expect.any(Function),
 		);
+	});
+
+	it("rejects truncated processed audio so callers can fall back to the original", async () => {
+		const dir = await makeTempDir();
+		const sourcePath = path.join(dir, "recording.mic.wav");
+		await fs.writeFile(sourcePath, Buffer.alloc(256));
+
+		mocks.execFile.mockImplementation(
+			(
+				command: string,
+				args: string[],
+				_options: unknown,
+				callback: (error?: Error | null, stdout?: string) => void,
+			) => {
+				void (async () => {
+					if (command === "ffprobe") {
+						const filePath = args.at(-1) ?? "";
+						callback(
+							null,
+							filePath.includes("polished.wav") ? "4.000000\n" : "10.000000\n",
+						);
+						return;
+					}
+					const outputPath = args.at(-1);
+					if (outputPath) {
+						await fs.writeFile(outputPath, Buffer.alloc(128));
+					}
+					callback(null);
+				})().catch((error) =>
+					callback(error instanceof Error ? error : new Error(String(error))),
+				);
+			},
+		);
+
+		const result = await enhanceSourceAudio({
+			audioPath: sourcePath,
+			settings: { reduceNoise: false, enhanceVoice: true, enhanceVoiceIntensity: 75 },
+		});
+
+		expect(result.success).toBe(false);
+		if (!result.success) {
+			expect(result.error).toContain("duration is invalid");
+		}
 	});
 });

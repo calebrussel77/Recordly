@@ -3429,6 +3429,18 @@ export default function VideoEditor() {
 			);
 		},
 	});
+	const isWebcamPreparing = Boolean(webcam.sourcePath && !resolvedWebcamVideoUrl);
+	const isSourceAudioFallbackLoading = audio.sourceAudioFallbackLoading;
+	const isPreviewMediaPreparing =
+		!isPlaying && (isSourceAudioFallbackLoading || isWebcamPreparing);
+	const previewMediaPreparingLabel = isSourceAudioFallbackLoading
+		? t("editor.preview.findingAudio", "Finding audio...")
+		: isWebcamPreparing
+			? t("editor.preview.preparingCamera", "Preparing camera...")
+			: null;
+	const visiblePreviewMediaPreparingLabel = isPreviewMediaPreparing
+		? previewMediaPreparingLabel
+		: null;
 
 	function togglePlayPause() {
 		const playback = videoPlaybackRef.current;
@@ -6258,6 +6270,14 @@ export default function VideoEditor() {
 												}
 												suspendRendering={shouldSuspendPreviewRendering}
 											/>
+											{visiblePreviewMediaPreparingLabel && (
+												<div className="pointer-events-none absolute inset-0 z-20 flex items-end justify-center p-3">
+													<div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/75 px-3 py-1.5 text-[11px] font-medium text-white/85 shadow-[0_10px_30px_rgba(0,0,0,0.24)] backdrop-blur-md">
+														<span className="h-2 w-2 animate-pulse rounded-full bg-[#2563EB]" />
+														<span>{visiblePreviewMediaPreparingLabel}</span>
+													</div>
+												</div>
+											)}
 										</div>
 									</div>
 								</div>
@@ -6378,9 +6398,13 @@ export default function VideoEditor() {
 									<Button
 										variant="ghost"
 										size="icon"
-										className={`h-7 w-7 rounded-full border border-foreground/10 transition-all shadow-[0_8px_18px_rgba(0,0,0,0.18)] ${isPlaying ? "bg-foreground/10 text-foreground hover:bg-foreground/20" : "bg-neutral-800 text-white hover:bg-neutral-700 dark:bg-white dark:text-black dark:hover:bg-white/90"}`}
+										className={`h-7 w-7 rounded-full border border-foreground/10 transition-all shadow-[0_8px_18px_rgba(0,0,0,0.18)] ${isPreviewMediaPreparing ? "cursor-wait opacity-75" : ""} ${isPlaying ? "bg-foreground/10 text-foreground hover:bg-foreground/20" : "bg-neutral-800 text-white hover:bg-neutral-700 dark:bg-white dark:text-black dark:hover:bg-white/90"}`}
 										onClick={togglePlayPause}
-										title={isPlaying ? "Pause" : "Play"}
+										aria-disabled={isPreviewMediaPreparing}
+										title={
+											visiblePreviewMediaPreparingLabel ??
+											(isPlaying ? "Pause" : "Play")
+										}
 									>
 										{isPlaying ? (
 											<Pause className="w-3.5 h-3.5" weight="fill" />

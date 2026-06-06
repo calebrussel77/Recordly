@@ -307,6 +307,12 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 	const microphoneStream = useRef<MediaStream | null>(null);
 	const webcamStream = useRef<MediaStream | null>(null);
 	const mixingContext = useRef<AudioContext | null>(null);
+	const mixingNodes = useRef<{
+		systemSource: MediaStreamAudioSourceNode;
+		micSource: MediaStreamAudioSourceNode;
+		micGain: GainNode;
+		destination: MediaStreamAudioDestinationNode;
+	} | null>(null);
 	const chunks = useRef<Blob[]>([]);
 	const webcamChunks = useRef<Blob[]>([]);
 	const startTime = useRef<number>(0);
@@ -547,6 +553,18 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		}
 
 		stopWebcamCaptureStream();
+
+		if (mixingNodes.current) {
+			const { systemSource, micSource, micGain, destination } = mixingNodes.current;
+			for (const node of [systemSource, micSource, micGain, destination]) {
+				try {
+					node.disconnect();
+				} catch {
+					/* ignore */
+				}
+			}
+			mixingNodes.current = null;
+		}
 
 		if (mixingContext.current) {
 			mixingContext.current.close().catch(() => undefined);
@@ -1796,6 +1814,21 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 
 					systemSource.connect(destination);
 					micSource.connect(micGain).connect(destination);
+
+					mixingNodes.current = {
+						systemSource,
+						micSource,
+						micGain,
+						destination,
+					};
+
+					if (context.state === "suspended") {
+						await context.resume();
+					}
+
+					if (context.state !== "running") {
+						throw new Error(`Audio mixer failed to start (${context.state}).`);
+					}
 
 					const mixedTrack = destination.stream.getAudioTracks()[0];
 					if (mixedTrack) {
