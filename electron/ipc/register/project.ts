@@ -22,7 +22,12 @@ import {
 	saveProjectThumbnail,
 	saveRecentProjectPaths,
 } from "../project/manager";
-import { persistRecordingSessionManifest, resolveRecordingSession } from "../project/session";
+import {
+	mergeSourceAudioFallbackPaths,
+	persistRecordingSessionManifest,
+	resolveRecordingSession,
+} from "../project/session";
+import { getCompanionAudioFallbackInfo } from "../recording/diagnostics";
 import {
 	currentProjectPath,
 	currentRecordingSession,
@@ -46,6 +51,50 @@ function normalizeRecordingTimeOffsetMs(value: unknown): number {
 
 function normalizeBoolean(value: unknown, fallback = false): boolean {
 	return typeof value === "boolean" ? value : fallback;
+}
+
+/**
+ * The recorder only knows the microphone sidecar it just wrote. Native capture
+ * additionally emits a sibling desktop-audio sidecar (`recording-*.system.wav`)
+ * that the recorder never lists, so the persisted session would be mic-only and
+ * the editor would silently drop system audio in preview and export. Discover
+ * the dedicated companion sidecars on disk and merge them in, never adding the
+ * embedded video track itself (which would duplicate a source). Best-effort: any
+ * discovery failure falls back to the recorder-provided paths unchanged.
+ */
+async function enrichSourceAudioFallbackPaths(
+	videoPath: string,
+	paths: string[],
+	startDelayMsByPath: Record<string, number>,
+): Promise<{ paths: string[]; startDelayMsByPath: Record<string, number> }> {
+	if (paths.length === 0) {
+		return { paths, startDelayMsByPath };
+	}
+
+	try {
+		const discovered = await getCompanionAudioFallbackInfo(videoPath);
+		const discoveredPaths: string[] = [];
+		const discoveredStartDelayMsByPath: Record<string, number> = {};
+		for (const rawPath of discovered.paths) {
+			const normalized = normalizeVideoSourcePath(rawPath);
+			if (!normalized || normalized === videoPath) {
+				continue;
+			}
+			discoveredPaths.push(normalized);
+			const delayMs = discovered.startDelayMsByPath[rawPath];
+			if (typeof delayMs === "number" && Number.isFinite(delayMs) && delayMs >= 0) {
+				discoveredStartDelayMsByPath[normalized] = delayMs;
+			}
+		}
+
+		return mergeSourceAudioFallbackPaths(
+			{ paths, startDelayMsByPath },
+			{ paths: discoveredPaths, startDelayMsByPath: discoveredStartDelayMsByPath },
+		);
+	} catch (error) {
+		console.warn("[recording-session] Failed to discover companion source audio", error);
+		return { paths, startDelayMsByPath };
+	}
 }
 
 function normalizeSourceAudioFallbackStartDelayMsByPath(
@@ -671,16 +720,23 @@ export function registerProjectHandlers() {
 		) => {
 			const normalizedVideoPath =
 				normalizeVideoSourcePath(session.videoPath) ?? session.videoPath;
-			const sourceAudioFallbackPaths = Array.isArray(session.sourceAudioFallbackPaths)
+			const providedFallbackPaths = Array.isArray(session.sourceAudioFallbackPaths)
 				? session.sourceAudioFallbackPaths
 						.map((audioPath) => normalizeVideoSourcePath(audioPath))
 						.filter((audioPath): audioPath is string => Boolean(audioPath))
 				: [];
-			const sourceAudioFallbackStartDelayMsByPath =
-				normalizeSourceAudioFallbackStartDelayMsByPath(
-					sourceAudioFallbackPaths,
-					session.sourceAudioFallbackStartDelayMsByPath,
-				);
+			const providedStartDelayMsByPath = normalizeSourceAudioFallbackStartDelayMsByPath(
+				providedFallbackPaths,
+				session.sourceAudioFallbackStartDelayMsByPath,
+			);
+			const {
+				paths: sourceAudioFallbackPaths,
+				startDelayMsByPath: sourceAudioFallbackStartDelayMsByPath,
+			} = await enrichSourceAudioFallbackPaths(
+				normalizedVideoPath,
+				providedFallbackPaths,
+				providedStartDelayMsByPath,
+			);
 			setCurrentVideoPath(normalizedVideoPath);
 			setCurrentRecordingSession({
 				videoPath: normalizedVideoPath,

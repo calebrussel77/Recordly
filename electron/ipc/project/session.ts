@@ -21,6 +21,42 @@ export function getRecordingSessionManifestPath(videoPath: string) {
 	return path.join(path.dirname(videoPath), `${baseName}${RECORDING_SESSION_MANIFEST_SUFFIX}`);
 }
 
+/**
+ * Merge the recorder-provided source-audio sidecars (e.g. the microphone
+ * sidecar, whose start-delay timing is authoritative) with additional ones
+ * discovered on disk (e.g. a sibling `recording-*.system.wav` written by native
+ * capture that the recorder never listed). De-duplicates by path, keeps the base
+ * ordering first, and prefers the base timing over the discovered timing. This
+ * stops the editor from silently dropping a real companion track in preview and
+ * export.
+ */
+export function mergeSourceAudioFallbackPaths(
+	base: { paths: string[]; startDelayMsByPath: Record<string, number> },
+	additional: { paths: string[]; startDelayMsByPath: Record<string, number> },
+): { paths: string[]; startDelayMsByPath: Record<string, number> } {
+	const paths: string[] = [];
+	const seen = new Set<string>();
+	for (const audioPath of [...base.paths, ...additional.paths]) {
+		if (!audioPath || seen.has(audioPath)) {
+			continue;
+		}
+		seen.add(audioPath);
+		paths.push(audioPath);
+	}
+
+	const startDelayMsByPath: Record<string, number> = {};
+	for (const audioPath of paths) {
+		const delayMs = normalizeAudioStartDelayMs(
+			base.startDelayMsByPath[audioPath] ?? additional.startDelayMsByPath[audioPath],
+		);
+		if (delayMs !== null) {
+			startDelayMsByPath[audioPath] = delayMs;
+		}
+	}
+
+	return { paths, startDelayMsByPath };
+}
+
 export async function persistRecordingSessionManifest(
 	session: RecordingSessionData,
 ): Promise<void> {
