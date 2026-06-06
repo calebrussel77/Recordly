@@ -12,7 +12,7 @@ import { normalizeVideoSourcePath } from "../utils";
 
 const execFileAsync = promisify(execFile);
 
-export const AUDIO_ENHANCEMENT_ENGINE_VERSION = "deepfilter-0.5.6-ffmpeg-v2";
+export const AUDIO_ENHANCEMENT_ENGINE_VERSION = "deepfilter-0.5.6-ffmpeg-v3";
 const DEFAULT_ENHANCE_VOICE_INTENSITY = 75;
 const DEEPFILTER_POST_FILTER_BETA = "0.08";
 
@@ -205,14 +205,21 @@ async function convertToWav48kMono(inputPath: string, outputPath: string) {
 }
 
 export function buildEnhanceVoiceFilter(intensity: number) {
-	const wetGain = Math.max(0, Math.min(1, intensity / 100));
-	const dryGain = Math.max(0, Math.min(1, 1 - wetGain));
-	const presenceGain = 1.1 + wetGain * 1.4;
-	const airGain = 0.5 + wetGain * 1.1;
-	const compressorThreshold = 0.11 - wetGain * 0.04;
-	const compressorRatio = 2.2 + wetGain * 1.4;
-	const compressorMakeup = 1.08 + wetGain * 0.24;
-	const cleanupNoiseReduction = 4 + wetGain * 6;
+	const amount = Math.max(0, Math.min(1, intensity / 100));
+	// The slider scales how aggressive the processing is — NOT how much raw audio
+	// to blend back in. The processed (wet) path stays dominant so enhancement is
+	// always clearly audible, and the small dry residue is itself cleaned (HPF +
+	// light denoise) so it can never reintroduce hiss or rumble. This replaces the
+	// previous mapping where intensity 75 mixed back 25% of the untouched, noisy,
+	// un-normalized signal — the main reason enhancement felt like it did nothing.
+	const wetGain = 0.8 + amount * 0.2;
+	const dryGain = Math.max(0, 1 - wetGain);
+	const presenceGain = 1.1 + amount * 1.4;
+	const airGain = 0.5 + amount * 1.1;
+	const compressorThreshold = 0.11 - amount * 0.04;
+	const compressorRatio = 2.2 + amount * 1.4;
+	const compressorMakeup = 1.08 + amount * 0.24;
+	const cleanupNoiseReduction = 6 + amount * 8;
 	return [
 		"[0:a]asplit=2[dry][wet]",
 		[
@@ -225,12 +232,15 @@ export function buildEnhanceVoiceFilter(intensity: number) {
 			`equalizer=f=3200:t=q:w=1.1:g=${presenceGain.toFixed(2)}`,
 			`equalizer=f=9000:t=q:w=1.4:g=${airGain.toFixed(2)}`,
 			`acompressor=threshold=${compressorThreshold.toFixed(3)}:ratio=${compressorRatio.toFixed(3)}:attack=7:release=140:makeup=${compressorMakeup.toFixed(2)}:knee=3:detection=rms`,
-			"speechnorm=p=0.92:e=18:c=2:r=0.0005:f=0.001",
-			"alimiter=limit=0.90:level=0[wetp]",
+			"speechnorm=p=0.9:e=12:c=2:r=0.0008:f=0.001",
+			"alimiter=limit=0.95:level=0[wetp]",
 		].join(","),
-		`[dry]volume=${dryGain.toFixed(3)}[dryv]`,
+		`[dry]highpass=f=80,afftdn=nr=6:nf=-50:tn=1,volume=${dryGain.toFixed(3)}[dryv]`,
 		`[wetp]volume=${wetGain.toFixed(3)}[wetv]`,
-		"[dryv][wetv]amix=inputs=2:normalize=0,alimiter=limit=0.90:level=0,aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS[aout]",
+		// Loudness-normalize the final mix to a consistent target (EBU R128, ~-16
+		// LUFS) so enhanced voice always lands at an even, broadcast-style level
+		// instead of relying on a flat gain multiplier.
+		"[dryv][wetv]amix=inputs=2:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=11,alimiter=limit=0.95:level=0,aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS[aout]",
 	].join(";");
 }
 

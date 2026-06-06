@@ -117,15 +117,27 @@ describe("audio enhancement cache", () => {
 		expect(buildAudioEnhancementCacheKey({ ...base, size: 1201 })).not.toBe(first);
 	});
 
-	it("maps intensity to dry and wet gains in the voice polish filter", () => {
-		expect(buildEnhanceVoiceFilter(0)).toContain("[dry]volume=1.000");
-		expect(buildEnhanceVoiceFilter(0)).toContain("[wetp]volume=0.000");
-		expect(buildEnhanceVoiceFilter(75)).toContain("[dry]volume=0.250");
-		expect(buildEnhanceVoiceFilter(75)).toContain("[wetp]volume=0.750");
+	it("keeps the processed signal dominant and never blends back raw audio", () => {
+		// Intensity controls processing aggressiveness, not raw bleed: the wet
+		// (processed) path stays >= 0.8 across the whole range so enhancement is
+		// always clearly audible.
+		expect(buildEnhanceVoiceFilter(0)).toContain("[wetp]volume=0.800");
+		expect(buildEnhanceVoiceFilter(0)).toContain("volume=0.200[dryv]");
+		expect(buildEnhanceVoiceFilter(75)).toContain("[wetp]volume=0.950");
+		expect(buildEnhanceVoiceFilter(75)).toContain("volume=0.050[dryv]");
 		expect(buildEnhanceVoiceFilter(75)).toContain("acompressor=threshold=0.080");
 		expect(buildEnhanceVoiceFilter(75)).toContain("equalizer=f=3200");
-		expect(buildEnhanceVoiceFilter(100)).toContain("[dry]volume=0.000");
 		expect(buildEnhanceVoiceFilter(100)).toContain("[wetp]volume=1.000");
+		expect(buildEnhanceVoiceFilter(100)).toContain("volume=0.000[dryv]");
+	});
+
+	it("cleans the dry residue and loudness-normalizes the final mix", () => {
+		// Even the residual dry path is high-passed + lightly denoised so it can
+		// never reintroduce hiss/rumble.
+		expect(buildEnhanceVoiceFilter(75)).toContain("[dry]highpass=f=80,afftdn=nr=6");
+		// The final mix is normalized to a consistent EBU R128 target instead of a
+		// flat gain multiplier.
+		expect(buildEnhanceVoiceFilter(75)).toContain("loudnorm=I=-16:TP=-1.5:LRA=11");
 	});
 
 	it("builds stronger fallback and residual noise cleanup filters", () => {
