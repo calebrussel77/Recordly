@@ -25,6 +25,7 @@ vi.mock("electron", () => ({
 
 vi.mock("../ffmpeg/binary", () => ({
 	getFfmpegBinaryPath: () => "ffmpeg",
+	getFfprobeBinaryPath: () => "ffprobe",
 }));
 
 vi.mock("../project/manager", () => ({
@@ -36,6 +37,7 @@ import {
 	buildEnhanceVoiceFilter,
 	buildNoiseReductionFilter,
 	enhanceSourceAudio,
+	isEnhancedDurationAcceptable,
 } from "./audioEnhancement";
 
 const tempDirs: string[] = [];
@@ -70,6 +72,11 @@ function mockSuccessfulProcessing() {
 			callback: (error?: Error | null) => void,
 		) => {
 			void (async () => {
+				if (command === "ffprobe") {
+					callback(null, "10.000000\n");
+					return;
+				}
+
 				if (command === process.env.RECORDLY_DEEP_FILTER_PATH) {
 					const outputDir = args[args.indexOf("-o") + 1];
 					await fs.mkdir(outputDir, { recursive: true });
@@ -110,15 +117,27 @@ describe("audio enhancement cache", () => {
 		expect(buildAudioEnhancementCacheKey({ ...base, size: 1201 })).not.toBe(first);
 	});
 
-	it("maps intensity to dry and wet gains in the voice polish filter", () => {
-		expect(buildEnhanceVoiceFilter(0)).toContain("[dry]volume=1.000");
-		expect(buildEnhanceVoiceFilter(0)).toContain("[wetp]volume=0.000");
-		expect(buildEnhanceVoiceFilter(75)).toContain("[dry]volume=0.250");
-		expect(buildEnhanceVoiceFilter(75)).toContain("[wetp]volume=0.750");
+	it("keeps the processed signal dominant and never blends back raw audio", () => {
+		// Intensity controls processing aggressiveness, not raw bleed: the wet
+		// (processed) path stays >= 0.8 across the whole range so enhancement is
+		// always clearly audible.
+		expect(buildEnhanceVoiceFilter(0)).toContain("[wetp]volume=0.800");
+		expect(buildEnhanceVoiceFilter(0)).toContain("volume=0.200[dryv]");
+		expect(buildEnhanceVoiceFilter(75)).toContain("[wetp]volume=0.950");
+		expect(buildEnhanceVoiceFilter(75)).toContain("volume=0.050[dryv]");
 		expect(buildEnhanceVoiceFilter(75)).toContain("acompressor=threshold=0.080");
 		expect(buildEnhanceVoiceFilter(75)).toContain("equalizer=f=3200");
-		expect(buildEnhanceVoiceFilter(100)).toContain("[dry]volume=0.000");
 		expect(buildEnhanceVoiceFilter(100)).toContain("[wetp]volume=1.000");
+		expect(buildEnhanceVoiceFilter(100)).toContain("volume=0.000[dryv]");
+	});
+
+	it("cleans the dry residue and loudness-normalizes the final mix", () => {
+		// Even the residual dry path is high-passed + lightly denoised so it can
+		// never reintroduce hiss/rumble.
+		expect(buildEnhanceVoiceFilter(75)).toContain("[dry]highpass=f=80,afftdn=nr=6");
+		// The final mix is normalized to a consistent EBU R128 target instead of a
+		// flat gain multiplier.
+		expect(buildEnhanceVoiceFilter(75)).toContain("loudnorm=I=-16:TP=-1.5:LRA=11");
 	});
 
 	it("builds stronger fallback and residual noise cleanup filters", () => {
@@ -127,6 +146,21 @@ describe("audio enhancement cache", () => {
 		expect(buildNoiseReductionFilter("fallback")).toContain("agate=threshold=0.018");
 		expect(buildNoiseReductionFilter("residual")).toContain("afftdn=nr=10");
 		expect(buildNoiseReductionFilter("residual")).not.toContain("anlmdn");
+	});
+
+	it("rejects enhanced outputs that are meaningfully shorter than the source", () => {
+		expect(
+			isEnhancedDurationAcceptable({
+				sourceDurationSeconds: 56.223,
+				outputDurationSeconds: 56.193,
+			}),
+		).toBe(true);
+		expect(
+			isEnhancedDurationAcceptable({
+				sourceDurationSeconds: 56.223,
+				outputDurationSeconds: 48,
+			}),
+		).toBe(false);
 	});
 });
 
@@ -191,6 +225,10 @@ describe("enhanceSourceAudio", () => {
 						callback(new Error("deep-filter failed"));
 						return;
 					}
+					if (command === "ffprobe") {
+						callback(null, "10.000000\n");
+						return;
+					}
 					const outputPath = args.at(-1);
 					if (outputPath) {
 						await fs.writeFile(outputPath, Buffer.alloc(128));
@@ -214,5 +252,48 @@ describe("enhanceSourceAudio", () => {
 			expect.any(Object),
 			expect.any(Function),
 		);
+	});
+
+	it("rejects truncated processed audio so callers can fall back to the original", async () => {
+		const dir = await makeTempDir();
+		const sourcePath = path.join(dir, "recording.mic.wav");
+		await fs.writeFile(sourcePath, Buffer.alloc(256));
+
+		mocks.execFile.mockImplementation(
+			(
+				command: string,
+				args: string[],
+				_options: unknown,
+				callback: (error?: Error | null, stdout?: string) => void,
+			) => {
+				void (async () => {
+					if (command === "ffprobe") {
+						const filePath = args.at(-1) ?? "";
+						callback(
+							null,
+							filePath.includes("polished.wav") ? "4.000000\n" : "10.000000\n",
+						);
+						return;
+					}
+					const outputPath = args.at(-1);
+					if (outputPath) {
+						await fs.writeFile(outputPath, Buffer.alloc(128));
+					}
+					callback(null);
+				})().catch((error) =>
+					callback(error instanceof Error ? error : new Error(String(error))),
+				);
+			},
+		);
+
+		const result = await enhanceSourceAudio({
+			audioPath: sourcePath,
+			settings: { reduceNoise: false, enhanceVoice: true, enhanceVoiceIntensity: 75 },
+		});
+
+		expect(result.success).toBe(false);
+		if (!result.success) {
+			expect(result.error).toContain("duration is invalid");
+		}
 	});
 });

@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildResolvedAudioPlan } from "@/lib/exporter/audioRoutingEngine";
-import {
-	getNormalizedMediaResourceUrl,
-	resolveMediaElementSource,
-} from "@/lib/exporter/localMediaSource";
+import { resolveMediaElementSource } from "@/lib/exporter/localMediaSource";
 import {
 	clampMediaTimeToDuration,
 	enablePitchPreservingPlayback,
@@ -14,6 +11,31 @@ import type { AudioRegion, SpeedRegion } from "../types";
 
 const SOURCE_AUDIO_PREVIEW_PLAYING_SEEK_DRIFT_SECONDS = 0.18;
 const SOURCE_AUDIO_PREVIEW_PAUSED_SEEK_DRIFT_SECONDS = 0.01;
+const SOURCE_AUDIO_PREVIEW_END_TOLERANCE_SECONDS = 0.35;
+const SOURCE_AUDIO_PREVIEW_RECOVERY_COOLDOWN_MS = 1200;
+const SOURCE_AUDIO_PREVIEW_MIN_ADVANCE_SECONDS = 0.015;
+const SOURCE_AUDIO_PREVIEW_PLAYING_SEEK_THRESHOLD_SECONDS = 2.5;
+const SOURCE_AUDIO_PREVIEW_SHORT_AUDIO_MARGIN_SECONDS = 0.5;
+const SOURCE_AUDIO_PREVIEW_SHORT_REFRESH_INTERVAL_MS = 1500;
+const SOURCE_AUDIO_PREVIEW_MAX_SHORT_REFRESH_ATTEMPTS = 6;
+const MEDIA_HAVE_CURRENT_DATA = 2;
+const MEDIA_NETWORK_NO_SOURCE = 3;
+
+interface SourceAudioPlaybackHealth {
+	mediaTime: number;
+	observedAtMs: number;
+	recoveredAtMs: number;
+}
+
+function getNowMs() {
+	return typeof performance !== "undefined" && typeof performance.now === "function"
+		? performance.now()
+		: Date.now();
+}
+
+function getSafeMediaTime(audio: HTMLAudioElement) {
+	return Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+}
 
 function getMediaErrorMessage(audio: HTMLAudioElement) {
 	const error = audio.error;
@@ -21,6 +43,20 @@ function getMediaErrorMessage(audio: HTMLAudioElement) {
 		return "unknown media error";
 	}
 	return `code=${error.code}${error.message ? ` message=${error.message}` : ""}`;
+}
+
+// Chromium caches media resources by URL, so calling load() on the same URL
+// re-serves the bytes fetched at first load. When a sidecar file is rewritten on
+// disk after the element loaded it (recording finalization race), we must change
+// the URL to force a fresh fetch. The media server ignores extra query params.
+function withMediaCacheBuster(src: string): string {
+	try {
+		const url = new URL(src);
+		url.searchParams.set("__reload", String(Math.round(getNowMs())));
+		return url.toString();
+	} catch {
+		return src;
+	}
 }
 
 function attachHiddenAudioElement(audio: HTMLAudioElement) {
@@ -36,16 +72,6 @@ function detachAudioElement(audio: HTMLAudioElement) {
 	if (audio.isConnected) {
 		audio.remove();
 	}
-}
-
-function primeMediaElementSource(audio: HTMLAudioElement, resource: string) {
-	const optimisticSrc = getNormalizedMediaResourceUrl(resource);
-	if (!optimisticSrc || audio.src === optimisticSrc) {
-		return;
-	}
-
-	audio.src = optimisticSrc;
-	audio.load();
 }
 
 interface UseAudioPreviewSyncParams {
@@ -109,10 +135,9 @@ export function useAudioPreviewSync({
 	const sourceAudioGainNodesRef = useRef<Map<string, GainNode>>(new Map());
 	const sourceAudioElementRevokersRef = useRef<Map<string, () => void>>(new Map());
 	const sourceAudioElementResourcesRef = useRef<Map<string, string>>(new Map());
-	const sourceAudioContextRef = useRef<AudioContext | null>(null);
-	const sourceAudioMasterGainRef = useRef<GainNode | null>(null);
-	const sourceAudioResumePromiseRef = useRef<Promise<void> | null>(null);
+	const isPlayingRef = useRef(isPlaying);
 	const lastSourceAudioSyncTimeRef = useRef<number | null>(null);
+	const sourceAudioPlaybackHealthRef = useRef<Map<string, SourceAudioPlaybackHealth>>(new Map());
 	const [sourceAudioReadyRevision, setSourceAudioReadyRevision] = useState(0);
 	const [playableSourceAudioPaths, setPlayableSourceAudioPaths] = useState<Set<string>>(
 		() => new Set(),
@@ -125,7 +150,6 @@ export function useAudioPreviewSync({
 			),
 		[playableSourceAudioPaths, resolvedSourceTracks],
 	);
-
 	const setSourceAudioPlayable = useCallback((audioPath: string, playable: boolean) => {
 		setPlayableSourceAudioPaths((prev) => {
 			const hasPath = prev.has(audioPath);
@@ -162,33 +186,9 @@ export function useAudioPreviewSync({
 		[setSourceAudioPlayable],
 	);
 
-	const ensureSourceAudioContext = useCallback(() => {
-		if (!sourceAudioContextRef.current) {
-			const context = new AudioContext({ latencyHint: "interactive" });
-			const masterGain = context.createGain();
-			masterGain.gain.value = 1;
-			masterGain.connect(context.destination);
-			sourceAudioContextRef.current = context;
-			sourceAudioMasterGainRef.current = masterGain;
-		}
-		return sourceAudioContextRef.current;
-	}, []);
-
-	const ensureSourceAudioRunning = useCallback(() => {
-		const context = ensureSourceAudioContext();
-		if (context.state === "running") {
-			return Promise.resolve();
-		}
-		if (!sourceAudioResumePromiseRef.current) {
-			sourceAudioResumePromiseRef.current = context
-				.resume()
-				.catch(() => undefined)
-				.finally(() => {
-					sourceAudioResumePromiseRef.current = null;
-				});
-		}
-		return sourceAudioResumePromiseRef.current;
-	}, [ensureSourceAudioContext]);
+	useEffect(() => {
+		isPlayingRef.current = isPlaying;
+	}, [isPlaying]);
 
 	const getSourceAudioTimelineState = useCallback(
 		(audio: HTMLAudioElement, sourceAudioPath: string) => {
@@ -202,13 +202,8 @@ export function useAudioPreviewSync({
 			);
 			enablePitchPreservingPlayback(audio);
 
-			const activeSpeedRegion = effectiveSpeedRegions.find(
-				(region) =>
-					currentTime * 1000 >= region.startMs && currentTime * 1000 < region.endMs,
-			);
-			const targetPlaybackRate = activeSpeedRegion ? activeSpeedRegion.speed : 1;
-			if (Math.abs(audio.playbackRate - targetPlaybackRate) > 0.001) {
-				audio.playbackRate = targetPlaybackRate;
+			if (Math.abs(audio.playbackRate - 1) > 0.001) {
+				audio.playbackRate = 1;
 			}
 
 			const audioDuration = Number.isFinite(audio.duration) ? audio.duration : null;
@@ -222,17 +217,21 @@ export function useAudioPreviewSync({
 				currentTime - startDelaySeconds,
 				audioDuration,
 			);
+			const sourceAudioAtEnd =
+				audioDuration !== null && targetTime >= Math.max(0, audioDuration - 0.01);
+			const previewAtEnd =
+				Number.isFinite(duration) &&
+				currentTime >= Math.max(0, duration - SOURCE_AUDIO_PREVIEW_END_TOLERANCE_SECONDS);
 
 			return {
 				beforeAudioStart: currentTime + 0.001 < startDelaySeconds,
-				atEnd: audioDuration !== null && targetTime >= audioDuration,
+				atEnd: sourceAudioAtEnd && (!Number.isFinite(duration) || previewAtEnd),
 				targetTime,
 			};
 		},
 		[
 			currentTime,
 			duration,
-			effectiveSpeedRegions,
 			getSourceTrackPreviewGain,
 			isCurrentClipMuted,
 			previewVolume,
@@ -241,13 +240,15 @@ export function useAudioPreviewSync({
 	);
 
 	const primeSourceAudioPlayback = useCallback(() => {
-		void ensureSourceAudioRunning();
 		for (const [audioPath, audio] of sourceAudioElementsRef.current.entries()) {
 			attachHiddenAudioElement(audio);
 			const { beforeAudioStart, atEnd, targetTime } = getSourceAudioTimelineState(
 				audio,
 				audioPath,
 			);
+			if (!audio.src) {
+				continue;
+			}
 			try {
 				audio.currentTime = targetTime;
 			} catch {
@@ -257,7 +258,7 @@ export function useAudioPreviewSync({
 				void playSourceAudioElement(audio, audioPath);
 			}
 		}
-	}, [ensureSourceAudioRunning, getSourceAudioTimelineState, playSourceAudioElement]);
+	}, [getSourceAudioTimelineState, playSourceAudioElement]);
 
 	useEffect(() => {
 		if (typeof window === "undefined" || resolvedSourceTracks.length === 0) {
@@ -336,7 +337,6 @@ export function useAudioPreviewSync({
 	}, [previewVolume, resolvedUserTracks]);
 
 	useEffect(() => {
-		let cancelled = false;
 		const existing = sourceAudioElementsRef.current;
 		const currentIds = new Set(resolvedSourceTracks.map((track) => track.sourceRef.path));
 
@@ -355,6 +355,7 @@ export function useAudioPreviewSync({
 				sourceAudioElementRevokersRef.current.get(id)?.();
 				sourceAudioElementRevokersRef.current.delete(id);
 				sourceAudioElementResourcesRef.current.delete(id);
+				sourceAudioPlaybackHealthRef.current.delete(id);
 				existing.delete(id);
 			}
 		}
@@ -369,6 +370,9 @@ export function useAudioPreviewSync({
 				attachHiddenAudioElement(audio);
 				const audioElement = audio;
 				const notifyReady = () => {
+					if (audioElement.readyState >= MEDIA_HAVE_CURRENT_DATA) {
+						setSourceAudioPlayable(audioPath, true);
+					}
 					setSourceAudioReadyRevision((revision) => revision + 1);
 				};
 				const notifyError = () => {
@@ -400,14 +404,25 @@ export function useAudioPreviewSync({
 			// We route directly through the HTMLAudioElement to ensure pitch preservation works
 			// during speed changes. Note: this limits maximum preview volume to 1.0 (100%).
 
-			if (sourceAudioElementResourcesRef.current.get(audioPath) !== audioPath) {
+			const loadedResource = sourceAudioElementResourcesRef.current.get(audioPath);
+			if (loadedResource !== audioPath && audio.dataset.loadingResource !== audioPath) {
+				// Mark the load as in-flight so concurrent effect re-runs neither start
+				// a duplicate load nor treat the resource as resolved while src is still
+				// empty. The resource is recorded as loaded ONLY after src is actually
+				// assigned, so a superseded/aborted load can never leave the element
+				// stuck on an empty src (which previously muted re-opened recordings).
+				audio.dataset.loadingResource = audioPath;
 				audio.pause();
 				audio.src = "";
 				setSourceAudioPlayable(audioPath, false);
 				sourceAudioElementRevokersRef.current.get(audioPath)?.();
 				sourceAudioElementRevokersRef.current.delete(audioPath);
-				sourceAudioElementResourcesRef.current.set(audioPath, audioPath);
-				primeMediaElementSource(audio, audioPath);
+				sourceAudioElementResourcesRef.current.delete(audioPath);
+				sourceAudioPlaybackHealthRef.current.set(audioPath, {
+					mediaTime: getSafeMediaTime(audio),
+					observedAtMs: getNowMs(),
+					recoveredAtMs: 0,
+				});
 				setSourceAudioReadyRevision((revision) => revision + 1);
 
 				void (async () => {
@@ -415,33 +430,43 @@ export function useAudioPreviewSync({
 						const resolved = await resolveMediaElementSource(audioPath);
 						const latestAudio = existing.get(audioPath);
 
-						if (
-							cancelled ||
-							latestAudio !== audio ||
-							sourceAudioElementResourcesRef.current.get(audioPath) !== audioPath
-						) {
+						if (latestAudio !== audio) {
+							// Element was replaced (path changed) or removed (unmount).
 							resolved.revoke();
+							if (audio.dataset.loadingResource === audioPath) {
+								delete audio.dataset.loadingResource;
+							}
 							return;
 						}
 
 						sourceAudioElementRevokersRef.current.set(audioPath, resolved.revoke);
-						if (latestAudio.src === resolved.src) {
-							return;
-						}
-						if (!latestAudio.paused && !latestAudio.ended && latestAudio.src) {
-							return;
-						}
+						const shouldResume =
+							isPlayingRef.current || (!latestAudio.paused && !latestAudio.ended);
+						const restoreTime = getSafeMediaTime(latestAudio);
+						latestAudio.pause();
 						latestAudio.src = resolved.src;
 						latestAudio.load();
-						setSourceAudioReadyRevision((revision) => revision + 1);
-					} catch (error) {
-						if (cancelled) {
-							return;
+						sourceAudioElementResourcesRef.current.set(audioPath, audioPath);
+						delete latestAudio.dataset.loadingResource;
+						if (restoreTime > 0) {
+							try {
+								latestAudio.currentTime = restoreTime;
+							} catch {
+								// Some media elements reject seeks until metadata is available.
+							}
 						}
-
+						setSourceAudioReadyRevision((revision) => revision + 1);
+						if (shouldResume) {
+							void playSourceAudioElement(latestAudio, audioPath);
+						}
+					} catch (error) {
+						if (audio.dataset.loadingResource === audioPath) {
+							delete audio.dataset.loadingResource;
+						}
 						sourceAudioElementRevokersRef.current.get(audioPath)?.();
 						sourceAudioElementRevokersRef.current.delete(audioPath);
 						sourceAudioElementResourcesRef.current.delete(audioPath);
+						sourceAudioPlaybackHealthRef.current.delete(audioPath);
 						setSourceAudioPlayable(audioPath, false);
 						const latestAudio = existing.get(audioPath);
 						if (latestAudio === audio) {
@@ -462,23 +487,14 @@ export function useAudioPreviewSync({
 			);
 		}
 
-		if (sourceAudioMasterGainRef.current) {
-			sourceAudioMasterGainRef.current.gain.value = isCurrentClipMuted
-				? 0
-				: Math.max(0, Math.min(1, previewVolume));
-		}
-
 		if (resolvedSourceTracks.length === 0) {
 			lastSourceAudioSyncTimeRef.current = null;
 		}
-
-		return () => {
-			cancelled = true;
-		};
 	}, [
 		getSourceTrackPreviewGain,
 		isCurrentClipMuted,
 		onSourceFallbackLoadError,
+		playSourceAudioElement,
 		resolvedSourceTracks,
 		previewVolume,
 		setSourceAudioPlayable,
@@ -519,16 +535,7 @@ export function useAudioPreviewSync({
 			sourceAudioGainNodesRef.current.clear();
 			sourceAudioElementRevokersRef.current.clear();
 			sourceAudioElementResourcesRef.current.clear();
-			if (sourceAudioMasterGainRef.current) {
-				sourceAudioMasterGainRef.current.disconnect();
-				sourceAudioMasterGainRef.current = null;
-			}
-			const context = sourceAudioContextRef.current;
-			sourceAudioContextRef.current = null;
-			sourceAudioResumePromiseRef.current = null;
-			if (context) {
-				void context.close();
-			}
+			sourceAudioPlaybackHealthRef.current.clear();
 			lastSourceAudioSyncTimeRef.current = null;
 		};
 	}, []);
@@ -584,11 +591,6 @@ export function useAudioPreviewSync({
 		const driftThreshold = isPlaying
 			? SOURCE_AUDIO_PREVIEW_PLAYING_SEEK_DRIFT_SECONDS
 			: SOURCE_AUDIO_PREVIEW_PAUSED_SEEK_DRIFT_SECONDS;
-		if (sourceAudioMasterGainRef.current) {
-			sourceAudioMasterGainRef.current.gain.value = isCurrentClipMuted
-				? 0
-				: Math.max(0, Math.min(1, previewVolume));
-		}
 
 		for (const audio of sourceAudioElementsRef.current.values()) {
 			const sourceAudioPath = audio.dataset.sourceAudioPath ?? "";
@@ -596,11 +598,27 @@ export function useAudioPreviewSync({
 				audio,
 				sourceAudioPath,
 			);
+			if (!audio.src) {
+				continue;
+			}
+			const nowMs = getNowMs();
+			let health = sourceAudioPlaybackHealthRef.current.get(sourceAudioPath);
+			if (!health) {
+				health = {
+					mediaTime: getSafeMediaTime(audio),
+					observedAtMs: nowMs,
+					recoveredAtMs: 0,
+				};
+				sourceAudioPlaybackHealthRef.current.set(sourceAudioPath, health);
+			}
 
 			const shouldSeek =
+				audio.ended ||
 				timelineJumped ||
 				(!isPlaying && Math.abs(audio.currentTime - targetTime) > driftThreshold) ||
-				(isPlaying && Math.abs(audio.currentTime - targetTime) > 0.9);
+				(isPlaying &&
+					Math.abs(audio.currentTime - targetTime) >
+						SOURCE_AUDIO_PREVIEW_PLAYING_SEEK_THRESHOLD_SECONDS);
 			if (shouldSeek) {
 				try {
 					audio.currentTime = targetTime;
@@ -609,11 +627,91 @@ export function useAudioPreviewSync({
 				}
 			}
 
-			if (isPlaying && !beforeAudioStart && !atEnd) {
-				void ensureSourceAudioRunning().then(() => {
-					void playSourceAudioElement(audio, sourceAudioPath);
-				});
-			} else if (!audio.paused) {
+			const shouldPlaySourceAudio =
+				isPlaying && !beforeAudioStart && !atEnd && audio.volume > 0;
+			const audioMediaTime = getSafeMediaTime(audio);
+			const audioDriftSeconds = Math.abs(audioMediaTime - targetTime);
+			const audioAdvanced =
+				audioMediaTime > health.mediaTime + SOURCE_AUDIO_PREVIEW_MIN_ADVANCE_SECONDS ||
+				audioDriftSeconds <= SOURCE_AUDIO_PREVIEW_PLAYING_SEEK_DRIFT_SECONDS;
+
+			if (audioAdvanced || !shouldPlaySourceAudio) {
+				health.mediaTime = audioMediaTime;
+				health.observedAtMs = nowMs;
+			}
+
+			const audioDurationValue = Number.isFinite(audio.duration) ? audio.duration : null;
+			const reachedAudioEnd =
+				audioDurationValue !== null &&
+				targetTime >=
+					Math.max(0, audioDurationValue - SOURCE_AUDIO_PREVIEW_END_TOLERANCE_SECONDS);
+			// The timeline still has content past this audio track's end. This happens when
+			// the sidecar file was finalized (grown) by recording post-processing AFTER the
+			// <audio> element cached its metadata (a finalization race), or when the mic track
+			// is genuinely shorter than the video. We must not spin the recovery/reload loop
+			// forever in this state.
+			const timelineOutlastsAudio =
+				audioDurationValue !== null &&
+				Number.isFinite(duration) &&
+				duration > audioDurationValue + SOURCE_AUDIO_PREVIEW_SHORT_AUDIO_MARGIN_SECONDS;
+
+			if (shouldPlaySourceAudio && reachedAudioEnd && timelineOutlastsAudio) {
+				// Reload ONCE per observed duration to refresh possibly-stale metadata. If the
+				// duration is unchanged afterwards, the track is simply shorter than the
+				// timeline: leave it ended instead of looping audio.load()/play() forever.
+				const reloadKey = String(audioDurationValue);
+				if (audio.dataset.shortAudioReloadKey !== reloadKey) {
+					audio.dataset.shortAudioReloadKey = reloadKey;
+					health.recoveredAtMs = nowMs;
+					health.mediaTime = targetTime;
+					health.observedAtMs = nowMs;
+					try {
+						// Force a fresh fetch: a plain load() re-serves the cached
+						// (short) version captured before the sidecar was finalized.
+						audio.src = withMediaCacheBuster(audio.src);
+						audio.load();
+						audio.currentTime = targetTime;
+						void playSourceAudioElement(audio, sourceAudioPath);
+					} catch {
+						// Seeks can be rejected while the element reloads.
+					}
+				}
+			} else if (shouldPlaySourceAudio) {
+				const shouldRecover =
+					audio.paused ||
+					audio.ended ||
+					audio.readyState < MEDIA_HAVE_CURRENT_DATA ||
+					audio.networkState === MEDIA_NETWORK_NO_SOURCE ||
+					audioDriftSeconds > SOURCE_AUDIO_PREVIEW_PLAYING_SEEK_THRESHOLD_SECONDS;
+				const canRecover =
+					nowMs - health.recoveredAtMs > SOURCE_AUDIO_PREVIEW_RECOVERY_COOLDOWN_MS;
+				if (shouldRecover && canRecover) {
+					health.recoveredAtMs = nowMs;
+					health.mediaTime = targetTime;
+					health.observedAtMs = nowMs;
+					console.warn("[source-audio-preview] recovering playback", {
+						sourceAudioPath,
+						targetTime,
+						currentTime: audio.currentTime,
+						readyState: audio.readyState,
+						networkState: audio.networkState,
+						paused: audio.paused,
+						ended: audio.ended,
+					});
+					try {
+						if (
+							audio.networkState === MEDIA_NETWORK_NO_SOURCE ||
+							audio.readyState < MEDIA_HAVE_CURRENT_DATA
+						) {
+							audio.load();
+						}
+						audio.currentTime = targetTime;
+					} catch {
+						// Some media elements reject seeks while reloading.
+					}
+				}
+				void playSourceAudioElement(audio, sourceAudioPath);
+			} else if ((!isPlaying || beforeAudioStart || audio.volume <= 0) && !audio.paused) {
 				audio.pause();
 			}
 		}
@@ -621,28 +719,79 @@ export function useAudioPreviewSync({
 		lastSourceAudioSyncTimeRef.current = currentTime;
 	}, [
 		currentTime,
-		isCurrentClipMuted,
+		duration,
 		isPlaying,
-		previewVolume,
 		resolvedSourceTracks,
 		sourceAudioReadyRevision,
-		ensureSourceAudioRunning,
 		getSourceAudioTimelineState,
 		playSourceAudioElement,
 	]);
+
+	// A recording sidecar can still be finalizing (and thus shorter on disk) when the
+	// editor first loads it, so the <audio> element caches a too-short duration. While
+	// playback is PAUSED, refresh such elements from disk (cache-busted) a few times so
+	// the finalized, full-length file is in place before the user presses play — this
+	// avoids a mid-playback reload glitch when reaching the stale end. Bounded so a mic
+	// track that is genuinely shorter than the video stops retrying.
+	useEffect(() => {
+		if (resolvedSourceTracks.length === 0 || !Number.isFinite(duration) || duration <= 0) {
+			return;
+		}
+
+		const refreshShortSidecars = () => {
+			if (isPlayingRef.current) {
+				return;
+			}
+			for (const audio of sourceAudioElementsRef.current.values()) {
+				const audioDuration = Number.isFinite(audio.duration) ? audio.duration : null;
+				if (audioDuration === null || !audio.src) {
+					continue;
+				}
+				if (duration <= audioDuration + SOURCE_AUDIO_PREVIEW_SHORT_AUDIO_MARGIN_SECONDS) {
+					continue;
+				}
+				const attempts = Number(audio.dataset.shortRefreshAttempts ?? "0");
+				if (
+					!Number.isFinite(attempts) ||
+					attempts >= SOURCE_AUDIO_PREVIEW_MAX_SHORT_REFRESH_ATTEMPTS
+				) {
+					continue;
+				}
+				audio.dataset.shortRefreshAttempts = String(attempts + 1);
+				const restoreTime = getSafeMediaTime(audio);
+				audio.src = withMediaCacheBuster(audio.src);
+				audio.load();
+				if (restoreTime > 0) {
+					try {
+						audio.currentTime = restoreTime;
+					} catch {
+						// Seeks can be rejected while the element reloads.
+					}
+				}
+			}
+		};
+
+		refreshShortSidecars();
+		const intervalId = window.setInterval(
+			refreshShortSidecars,
+			SOURCE_AUDIO_PREVIEW_SHORT_REFRESH_INTERVAL_MS,
+		);
+		return () => window.clearInterval(intervalId);
+	}, [duration, resolvedSourceTracks]);
 
 	useEffect(() => {
 		if (!isPlaying || resolvedSourceTracks.length === 0) {
 			return;
 		}
-		void ensureSourceAudioRunning().then(() => {
-			for (const [audioPath, audio] of sourceAudioElementsRef.current.entries()) {
-				if (audio.paused) {
-					void playSourceAudioElement(audio, audioPath);
-				}
+		for (const [audioPath, audio] of sourceAudioElementsRef.current.entries()) {
+			if (audio.paused && audio.src) {
+				void playSourceAudioElement(audio, audioPath);
 			}
-		});
-	}, [ensureSourceAudioRunning, isPlaying, playSourceAudioElement, resolvedSourceTracks.length]);
+		}
+	}, [isPlaying, playSourceAudioElement, resolvedSourceTracks.length]);
 
-	return { hasPlayableSourceAudio, primeSourceAudioPlayback };
+	return {
+		hasPlayableSourceAudio,
+		primeSourceAudioPlayback,
+	};
 }

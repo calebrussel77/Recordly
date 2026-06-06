@@ -85,4 +85,39 @@ describe("recording session manifest", () => {
 			},
 		});
 	});
+
+	it("merges a discovered system sidecar into a mic-only base without dropping or duplicating", async () => {
+		const { mergeSourceAudioFallbackPaths } = await import("./session");
+		const micPath = "/r/recording.mic.wav";
+		const systemPath = "/r/recording.system.wav";
+
+		const merged = mergeSourceAudioFallbackPaths(
+			{ paths: [micPath], startDelayMsByPath: { [micPath]: 187 } },
+			{
+				// Discovery re-reports the mic with different timing and adds system audio.
+				paths: [systemPath, micPath],
+				startDelayMsByPath: { [systemPath]: 40, [micPath]: 999 },
+			},
+		);
+
+		expect(merged.paths).toEqual([micPath, systemPath]);
+		// Base (recorder-provided) timing wins; discovered system timing is kept.
+		expect(merged.startDelayMsByPath).toEqual({
+			[micPath]: 187,
+			[systemPath]: 40,
+		});
+	});
+
+	it("returns the base selection unchanged when there is nothing to merge", async () => {
+		const { mergeSourceAudioFallbackPaths } = await import("./session");
+		const micPath = "/r/recording.mic.wav";
+
+		const merged = mergeSourceAudioFallbackPaths(
+			{ paths: [micPath], startDelayMsByPath: { [micPath]: 5 } },
+			{ paths: [], startDelayMsByPath: {} },
+		);
+
+		expect(merged.paths).toEqual([micPath]);
+		expect(merged.startDelayMsByPath).toEqual({ [micPath]: 5 });
+	});
 });
